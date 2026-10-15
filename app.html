@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NGL Review Assistant</title>
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <link rel="stylesheet" href="css/style.css">
+  <script src="vendor/plotly.min.js"></script>
+  <script src="vendor/leaflet.js"></script>
+  <script src="vendor/pdf.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/queue" style="color:inherit;text-decoration:none"><div class="logo">N</div> NGL Review Assistant</a>
+  <nav id="nav">
+    <a href="#/queue" data-r="queue">Review queue</a>
+    <a href="#/site" data-r="site">Site review</a>
+    <a href="#/calibration" data-r="calibration">Calibration</a>
+    <a href="#/schema" data-r="schema">Schema</a>
+    <a href="#/about" data-r="about">Checks</a>
+  </nav>
+  <div class="right" id="who"></div>
+</header>
+<main id="view"></main>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

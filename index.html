@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NGL Review Assistant – Sign in</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="login-wrap">
+  <section class="login-side">
+    <div class="brand"><div class="logo">N</div> NGL Review Assistant</div>
+    <div>
+      <h1>Consistency checks for Next Generation Liquefaction case histories</h1>
+      <p>Pulls submitted-but-unreviewed sites through the NGL API, plots each test and flags what looks inconsistent – so reviewers can go straight to the problems.</p>
+      <ul>
+        <li>CPT, boring logs &amp; SPT, Vs profiles, field observations</li>
+        <li>Every finding marked <b>Inconsistent</b>, <b>Not sure</b> or <b>Consistent</b>, with depth / location</li>
+        <li>Reference PDFs and digitised figures shown side by side with the data</li>
+      </ul>
+    </div>
+    <div class="small" style="color:#cfe0f1">Read-only · uses the NGL REST API · UCLA Geotechnical</div>
+  </section>
+  <section class="login-main">
+    <div class="login-card">
+      <div class="card">
+        <h2>Sign in</h2>
+        <p class="muted small">Use your nextgenerationliquefaction.org account. Reviewer access is needed to see unreviewed sites.</p>
+        <form id="login">
+          <label for="user">Username or email</label>
+          <input id="user" name="user" autocomplete="username" required>
+          <label for="pw">Password</label>
+          <input id="pw" name="pw" type="password" autocomplete="current-password" required>
+          <button class="primary" type="submit" style="width:100%;justify-content:center;margin-top:18px" id="go">Sign in</button>
+          <div class="error" id="err"></div>
+        </form>
+        <p class="small muted" style="margin-top:16px">Your password is sent only to NGL to obtain a 2-hour access token. It is never stored; the token is kept in this browser tab only.</p>
+      </div>
+      <p class="small" style="text-align:center"><a href="app.html#/site/demo">Explore with demo data →</a></p>
+    </div>
+  </section>
+</div>
+<script type="module">
+  import { login, session } from "./js/api.js";
+  if (session.get()) location.replace("app.html");
+  const f = document.getElementById("login"), err = document.getElementById("err"), go = document.getElementById("go");
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    err.style.display = "none"; go.disabled = true; go.textContent = "Signing in…";
+    try {
+      await login(f.user.value.trim(), f.pw.value);
+      f.pw.value = "";
+      location.replace("app.html");
+    } catch (ex) {
+      err.textContent = ex.message.includes("Failed to fetch") ? "Could not reach the NGL API (network or proxy problem)." : ex.message;
+      err.style.display = "block";
+    } finally { go.disabled = false; go.textContent = "Sign in"; }
+  });
+</script>
+</body>
+</html>
