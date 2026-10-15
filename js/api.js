@@ -87,21 +87,30 @@ export class NGLClient {
     if (roleParam) base.role = roleParam;
     const pk = (table in ENDPOINTS ? table : "") + "_ID";
     const rows = [], seen = new Set();
-    let size = limit;
-    for (let page = 1; page <= maxPages; page++) {
-      const batch = await this._post(path, { ...base, limit: size, page });
-      if (page === 1 && batch.length > 0 && batch.length < size && maxPages > 1) {
-        // maybe a capped page size: probe page 2 with the observed size
-        size = batch.length;
+    const addRows = (batch) => { let fresh = 0; for (const r of batch) { const k = r[pk] ?? JSON.stringify(r); if (!seen.has(k)) { seen.add(k); rows.push(r); fresh++; } } return fresh; };
+    let calls = 1;
+    const first = await this._post(path, { ...base, limit, page: 1, ...(sort ? {} : { sort: pk, direction: "asc" }) });
+    addRows(first);
+    // Keyset paging: ask for rows with a primary key above the last one received, until an
+    // empty batch comes back. This works even if NGL caps the page size (e.g. at 20 rows) or
+    // ignores `page`, which plain page-number paging does not.
+    if (maxPages > 1 && first.length && pk in first[0] && !sort) {
+      let last = Math.max(...rows.map((r) => Number(r[pk])).filter(Number.isFinite));
+      for (let k = 1; k < maxPages && Number.isFinite(last); k++) {
+        const w = where ? `(${where}) AND ${pk}>${last}` : `${pk}>${last}`;
+        const batch = await this._post(path, { ...base, where: w, limit, page: 1, sort: pk, direction: "asc" });
+        calls++;
+        if (!batch.length || !addRows(batch)) break;
+        last = Math.max(last, ...batch.map((r) => Number(r[pk])).filter(Number.isFinite));
       }
-      let fresh = 0;
-      for (const r of batch) {
-        const k = r[pk] ?? JSON.stringify(r);
-        if (!seen.has(k)) { seen.add(k); rows.push(r); fresh++; }
+    } else if (maxPages > 1 && first.length >= limit) {
+      for (let page = 2; page <= maxPages; page++) {
+        const batch = await this._post(path, { ...base, limit, page });
+        calls++;
+        if (!addRows(batch) || batch.length < limit) break;
       }
-      this.pageInfo[table] = { pageSize: size, pages: page, rows: rows.length };
-      if (batch.length < size || fresh === 0) break;
     }
+    this.pageInfo[table] = { firstPage: first.length, calls, rows: rows.length };
     return rows;
   }
 
@@ -125,12 +134,14 @@ export class NGLClient {
   }
 
   // Review state of every visible site, from SITE_STAT (1 = submitted) and SITE_REVW
-  // (1 = reviewed); falls back to comparing what the API returns with/without unreviewed data.
+  // (number of reviews done: 2 = reviewed); falls back to comparing what the API returns with/without unreviewed data.
   async siteLists() {
     const all = await this.query("SITE");
     if (all.length && "SITE_STAT" in all[0] && "SITE_REVW" in all[0]) {
       return all.map((r) => {
-        const state = Number(r.SITE_REVW) === 1 ? "reviewed" : Number(r.SITE_STAT) === 1 ? "submitted" : "draft";
+        // SITE_REVW counts completed reviews; a site needs two reviewers
+        const rv = Number(r.SITE_REVW), st = Number(r.SITE_STAT);
+        const state = rv >= 2 ? "reviewed" : st !== 1 ? "draft" : rv === 1 ? "second" : "submitted";
         return { ...r, _state: state, _reviewed: state === "reviewed" };
       });
     }

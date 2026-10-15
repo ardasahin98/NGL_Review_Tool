@@ -59,6 +59,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._proxy("POST")
         self._send(404, b"", "text/plain")
 
+    def end_headers(self):
+        # never let the browser reuse an old copy of the app's JS/CSS
+        if not self.path.startswith("/api/ngl/"):
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def log_message(self, fmt, *args):  # keep the console quiet except for errors
         if args and str(args[1]).startswith(("4", "5")):
             super().log_message(fmt, *args)

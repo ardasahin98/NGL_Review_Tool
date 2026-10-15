@@ -165,7 +165,7 @@ export function siteMap(el, ctx, obs, findings, scale = 20) {
   const lon0 = fin(ctx.siteLon) ? ctx.siteLon : median(ctx.tests.map((t) => t.lon)) || 0;
   _map = L.map(el, { preferCanvas: true }).setView([lat0, lon0], 17);
   const providers = {
-    "Streets (CARTO)": L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", { maxZoom: 20, subdomains: "abcd", attribution: "© OpenStreetMap contributors © CARTO" }),
+    "Streets (Esri)": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19, attribution: "Esri, HERE, Garmin, © OpenStreetMap contributors" }),
     "Satellite (Esri)": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 20, attribution: "Esri World Imagery" }),
     "OpenStreetMap": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }),
   };

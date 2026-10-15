@@ -82,14 +82,15 @@ async function pageQueue() {
   const q = S.queue, cols = columns(q).filter((c) => !c.startsWith("_"));
   const revCols = cols.filter((c) => /STAT|REVW|REVIEW|VERS/i.test(c));
   const show = ["SITE_ID", "SITE_NAME", "SITE_LAT", "SITE_LON", ...revCols].filter((c) => cols.includes(c));
-  let states = new Set(["submitted"]), text = "";
+  let states = new Set(["submitted", "second"]), text = "";
   const cnt = (st) => q.filter((r) => r._state === st).length;
-  const STATE = { submitted: ['b-UNSURE', 'Awaiting review'], draft: ['b-draft', 'Not submitted (draft)'], reviewed: ['b-PASS', 'Reviewed'] };
+  const STATE = { submitted: ['b-UNSURE', 'Awaiting review (0 of 2)'], second: ['b-UNSURE', 'Needs 2nd review (1 of 2)'],
+    draft: ['b-draft', 'Not submitted (draft)'], reviewed: ['b-PASS', 'Reviewed (2 of 2)'] };
   const draw = () => {
     const rows = q.filter((r) => states.has(r._state) && (!text || JSON.stringify(r).toLowerCase().includes(text)));
     $("#qcard").innerHTML = `<div class="toolbar"><input type="search" id="qs" placeholder="Filter by name or ID…" value="${esc(text)}">
       <div class="chips">${Object.entries(STATE).map(([k, [, l]]) => `<span class="chip ${states.has(k) ? "on" : ""}" data-st="${k}">${l} (${cnt(k)})</span>`).join("")}</div>
-      <span class="muted small grow" style="text-align:right">${q.length} visible sites${session.isElevated() ? "" : " · choose Reviewer to see all unreviewed sites"}</span>
+      <span class="muted small grow" style="text-align:right" title="${esc(JSON.stringify(client.pageInfo.SITE || {}))}">${q.length} sites loaded${client.pageInfo.SITE ? ` in ${client.pageInfo.SITE.calls} request(s)` : ""}${session.role() === "user" ? " · signed in as User: choose Reviewer to include unreviewed sites" : ""}</span>
       <span class="small muted">or open SITE_ID</span><input id="qid" style="width:110px" placeholder="e.g. 123"><button id="qgo">Open</button></div>
       <div class="tbl-wrap"><table><thead><tr><th>Status</th>${show.map((c) => `<th>${esc(c)}</th>`).join("")}<th></th></tr></thead><tbody>
       ${rows.map((r) => `<tr class="clickable" data-id="${esc(r.SITE_ID)}"><td><span class="badge ${STATE[r._state][0]}">${STATE[r._state][1]}</span></td>
