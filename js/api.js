@@ -1,5 +1,5 @@
 // Read-only NGL REST API client (token kept in sessionStorage for its 2-hour lifetime).
-import { API_BASE, ENDPOINTS, BUNDLE_ORDER, ROLES } from "./config.js";
+import { API_BASE, SITE_BASE, NGL_ORIGIN, ENDPOINTS, BUNDLE_ORDER, ROLES } from "./config.js";
 
 const TOKEN_KEY = "ngl_token";
 const LIFETIME_MS = 2 * 3600 * 1000;
@@ -19,6 +19,8 @@ export const session = {
   role() { const r = this.get()?.role; return ROLES[r] ? r : "user"; },
   roleParam() { return ROLES[this.role()].param; },
   isElevated() { return this.roleParam() !== null; },
+  setSite(site) { const s = this.get(); if (s) { s.site = site; try { sessionStorage.setItem(TOKEN_KEY, JSON.stringify(s)); } catch { /* */ } } },
+  site() { return this.get()?.site || null; },
   clear() { try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* */ } },
   minutesLeft() { const s = this.get(); return s ? Math.max(0, Math.round((LIFETIME_MS - (Date.now() - s.t)) / 60000)) : 0; },
 };
@@ -33,6 +35,13 @@ export async function login(user, password, role = "reviewer") {
   try { js = await r.json(); } catch { /* not json */ }
   if (!js.token) throw new NGLError(js.errorMessage || `Login failed (HTTP ${r.status}).`);
   session.set(js.token, user, role);
+  // Also open a website session: uploaded files (figures, reports) are only served by the
+  // website, not the API. Failure here is not fatal – the data checks still work.
+  try {
+    const s = await fetch(SITE_BASE + "/login", { method: "POST", headers: { Authorization: "Basic " + btoa(unescape(encodeURIComponent(user + ":" + password))) } });
+    const sj = await s.json().catch(() => ({}));
+    session.setSite(sj.session ? { cookie: sj.session } : { error: sj.errorMessage || `HTTP ${s.status}` });
+  } catch (e) { session.setSite({ error: e.message }); }
   if (ROLES[role]?.param) {
     try { await verifyRole(); }
     catch (e) { session.clear(); throw e; }
@@ -180,6 +189,26 @@ export class NGLClient {
       catch (e) { B[table] = []; B._log.push(`${table}: error ${e.message}`); }
     }
     return B;
+  }
+
+  // Download a file uploaded to NGL (FILE_ID). Returns {data, type, name} or {error}.
+  async getFile(fileId) {
+    const onNgl = location.hostname.endsWith("nextgenerationliquefaction.org");
+    try {
+      let r;
+      if (onNgl) r = await fetch(`/downloads/download-file-by-i-d/${fileId}`, { credentials: "include" });
+      else {
+        const st = session.site();
+        if (!st?.cookie) return { error: st?.error ? `No NGL website session (${st.error}). Sign out and in again.` : "No NGL website session – sign out and in again." };
+        r = await fetch(`${SITE_BASE}/file?id=${encodeURIComponent(fileId)}`, { headers: { "X-NGL-Session": st.cookie } });
+      }
+      const ct = r.headers.get("Content-Type") || "";
+      if (!r.ok) { let m = `HTTP ${r.status}`; try { m = (await r.json()).errorMessage || m; } catch { /* */ } return { error: m }; }
+      if (ct.includes("text/html")) return { error: "NGL returned a web page instead of the file (login needed?)." };
+      const disp = r.headers.get("Content-Disposition") || "";
+      const name = decodeURIComponent((disp.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i) || [])[1] || "");
+      return { data: await r.arrayBuffer(), type: ct, name };
+    } catch (e) { return { error: e.message }; }
   }
 
   async tryDownload(url) {

@@ -8,6 +8,7 @@ import { bi2014, lpi } from "./geotech.js";
 import * as viz from "./viz.js";
 import * as refs from "./refs.js";
 import * as blv from "./blv.js";
+import * as src from "./source.js";
 import demoData from "./demo-data.js";
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -24,7 +25,11 @@ const ls = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* */ } },
 };
 
-const badge = (s) => `<span class="badge b-${s}"><span class="ic">${STATUS_ICON[s]}</span>${STATUS_LABEL[s]}</span>`;
+const SRC_LABEL = { FAIL: "Differs from source", UNSURE: "Not sure", PASS: "Matches source", NONE: "Not compared yet" };
+const DATA_LABEL = { FAIL: "Inconsistent", UNSURE: "Not sure", PASS: "No problems found" };
+const badge = (s, kind) => { const L = kind === "src" ? SRC_LABEL : kind === "data" ? DATA_LABEL : STATUS_LABEL;
+  return `<span class="badge b-${s === "NONE" ? "draft" : s}"><span class="ic">${s === "NONE" ? "–" : STATUS_ICON[s]}</span>${L[s]}</span>`; };
+const isSrc = (f) => f.group === src.GROUP || f.group === "Reference";
 const isDemo = () => S.siteId === "demo";
 
 // ------------------------------------------------------------------ shell
@@ -107,7 +112,7 @@ async function pageQueue() {
 // ------------------------------------------------------------------ site review
 async function loadSite(id) {
   if (S.siteId === id && S.bundle) return;
-  S.uploads = []; S.overlays = {}; S.tab = "summary"; S.sel = {};
+  S.uploads = []; S.overlays = {}; S.tab = "summary"; S.sel = {}; S.srcFindings = {}; S.fileStatus = null;
   if (id === "demo") { S.bundle = structuredClone(demoData); S.bundle._log = ["Demo bundle (synthetic data with planted errors)."]; }
   else {
     view.innerHTML = `<div class="card"><h2>Loading site ${esc(id)}…</h2><div class="progress"><div id="pb"></div></div><p class="muted small" id="pt"></p></div>`;
@@ -115,6 +120,27 @@ async function loadSite(id) {
   }
   S.siteId = id;
   S.res = null;
+  loadSourceFiles();   // in the background; re-renders when done
+}
+
+// Download every file uploaded to NGL for this site (site, tests, observations, samples).
+async function loadSourceFiles() {
+  const files = refs.linkedFiles(S.bundle, S.R);
+  const uniq = [...new Map(files.map((f) => [String(f.fileId), f])).values()];
+  S.fileStatus = { total: uniq.length, done: 0, failed: [] };
+  for (const f of uniq) {
+    let res;
+    if (isDemo()) {
+      try { const r = await fetch(`demo/${encodeURIComponent(f.name)}`); res = r.ok ? { data: await r.arrayBuffer(), type: r.headers.get("Content-Type") || "", name: f.name } : { error: `HTTP ${r.status}` }; }
+      catch (e) { res = { error: e.message }; }
+    } else res = await client.getFile(f.fileId);
+    if (res.data) {
+      const tidm = String(f.attachedTo).match(/^TEST_ID=(\d+)/);
+      await addUpload(res.name || f.name, res.type || f.type, res.data, { fileId: f.fileId, caption: f.caption, attachedTo: f.attachedTo, testId: tidm ? Number(tidm[1]) : null, fromNgl: true });
+    } else S.fileStatus.failed.push(`${f.name}: ${res.error}`);
+    S.fileStatus.done++;
+  }
+  if (location.hash.startsWith("#/site")) pageSite();
 }
 function results() {
   if (!S.res) S.res = runAll(S.bundle, S.R);
@@ -123,6 +149,7 @@ function results() {
 function allFindings() {
   const r = results(), out = [...r.findings];
   for (const u of S.uploads) if (u.pdf) out.push(...refs.referenceChecks(u.pdf, u.name, r.ctx, r.perTest));
+  for (const fs of Object.values(S.srcFindings || {})) out.push(...fs);
   for (const [tid, ov] of Object.entries(S.overlays)) {
     const t = r.perTest[tid];
     if (t?.raw) out.push(...refs.overlayCompare(t.raw, ov, Number(tid), r.ctx.label(Number(tid))));
@@ -148,10 +175,10 @@ async function pageSite(id) {
       ${rev.length ? " · " + rev.map(([k, v]) => `${esc(k)} = <b>${esc(v)}</b>`).join(", ") : ""}</div></div>
     </div>
     <div class="kpis" style="margin-top:14px">
-      <div class="kpi ${worst(F)}"><div class="l">Overall</div><div class="v">${badge(worst(F))}</div></div>
-      <div class="kpi FAIL"><div class="l">Inconsistent</div><div class="v">${cnt("FAIL")}</div></div>
-      <div class="kpi UNSURE"><div class="l">Not sure</div><div class="v">${cnt("UNSURE")}</div></div>
-      <div class="kpi PASS"><div class="l">Consistent</div><div class="v">${cnt("PASS")}</div></div>
+      <div class="kpi ${worst(F.filter((f) => !isSrc(f)))}"><div class="l">Data checks</div><div class="v">${badge(worst(F.filter((f) => !isSrc(f))), "data")}</div></div>
+      <div class="kpi FAIL"><div class="l">Data problems</div><div class="v">${F.filter((f) => !isSrc(f) && f.status === "FAIL").length} <span class="small muted">✕</span> · ${F.filter((f) => !isSrc(f) && f.status === "UNSURE").length} <span class="small muted">?</span></div></div>
+      <div class="kpi ${(() => { const so = F.filter((f) => f.group === src.GROUP); return so.length ? worst(so) : "UNSURE"; })()}"><div class="l">Source comparison</div><div class="v">${(() => { const so = F.filter((f) => f.group === src.GROUP); return badge(so.length ? worst(so) : "NONE", "src"); })()}</div></div>
+      <div class="kpi"><div class="l">Tests compared with a source figure</div><div class="v">${new Set(F.filter((f) => f.group === src.GROUP).map((f) => f.testId)).size} / ${ctx.tests.length}</div></div>
     </div></div>
     <div class="card"><div class="tabs">${tabs.map(([k, l, n]) => `<button data-t="${k}" class="${S.tab === k ? "active" : ""}">${l}${n !== undefined ? `<span class="count">${n}</span>` : ""}</button>`).join("")}</div>
     <div id="tab"></div></div>`;
@@ -169,7 +196,7 @@ function findingsTable(el, F, { filters = true, initial = ["FAIL", "UNSURE"] } =
       <select id="fg"><option value="">All groups</option>${groups.map((g) => `<option ${g === grp ? "selected" : ""}>${esc(g)}</option>`).join("")}</select>
       <input type="search" id="fq" placeholder="Search findings…" value="${esc(q)}"></div>` : "") +
       `<div class="tbl-wrap"><table><thead><tr><th>Status</th><th>Group</th><th>Check</th><th>Target</th><th>Where</th><th>Details</th></tr></thead><tbody>
-      ${rows.map((f) => `<tr class="${f.testId ? "clickable" : ""}" data-tid="${f.testId ?? ""}" data-i="${F.indexOf(f)}"><td>${badge(f.status)}</td><td>${esc(f.group)}</td><td><b>${esc(f.check)}</b></td>
+      ${rows.map((f) => `<tr class="${f.testId ? "clickable" : ""}" data-tid="${f.testId ?? ""}" data-i="${F.indexOf(f)}"><td>${badge(f.status, isSrc(f) && f.group !== "Reference" ? "src" : "data")}</td><td>${esc(f.group)}</td><td><b>${esc(f.check)}</b></td>
         <td>${esc(f.target)}</td><td class="where">${esc(f.where)}</td><td>${esc(f.message)}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">No findings with these filters.</td></tr>`}
       </tbody></table></div>`;
     if (filters) {
@@ -222,17 +249,25 @@ function zoomPlot(el, f, full) {
 
 function tabSummary(T, r, F) {
   const ctx = r.ctx;
-  const rows = ctx.tests.map((t) => { const fs = F.filter((f) => f.testId === t.testId); return { t, fs, st: fs.length ? worst(fs) : "UNSURE" }; });
-  T.innerHTML = `<h3>Tests</h3><div class="tbl-wrap" style="max-height:none;margin-bottom:18px"><table><thead><tr><th>Status</th><th>TEST_ID</th><th>Name</th><th>Kind</th><th>Type</th>
-    <th class="num">Inconsistent</th><th class="num">Not sure</th><th class="num">Consistent</th></tr></thead><tbody>
-    ${rows.map(({ t, fs, st }) => `<tr class="clickable" data-tid="${t.testId}"><td>${badge(st)}</td><td>${t.testId}</td><td><b>${esc(t.name)}</b></td><td>${esc(t.kind)}</td><td>${esc(t.type)}</td>
-      ${["FAIL", "UNSURE", "PASS"].map((s) => `<td class="num">${fs.filter((f) => f.status === s).length}</td>`).join("")}</tr>`).join("")}
-    ${Object.entries(r.obs).map(([fid, o]) => `<tr><td>${badge(o.status)}</td><td>—</td><td><b>FLDO ${fid}</b></td><td>Field observation</td><td>FLDO</td>
-      ${["FAIL", "UNSURE", "PASS"].map((s) => `<td class="num">${o.findings.filter((f) => f.status === s).length}</td>`).join("")}</tr>`).join("")}
+  const rows = ctx.tests.map((t) => {
+    const fs = F.filter((f) => f.testId === t.testId);
+    const dat = fs.filter((f) => !isSrc(f)), so = fs.filter((f) => isSrc(f) && f.group === src.GROUP);
+    const docs = S.uploads.filter((u) => u.testId === t.testId).length;
+    return { t, dat, so, docs, dst: dat.length ? worst(dat) : "UNSURE", sst: so.length ? worst(so) : "NONE" };
+  });
+  const st = S.fileStatus;
+  T.innerHTML = `<div class="note" style="margin-bottom:12px"><b>Two separate results per test.</b> <i>Data checks</i> look for contradictions inside the NGL data (units, depths, SPT vs description, lab vs USCS…). <i>Source comparison</i> compares the NGL data with the figure/report the contributor uploaded – only that one says whether the data matches the source. Open a test, calibrate its source figure and press <b>Compare with NGL</b>.</div>
+    ${st ? `<p class="small muted">Files uploaded to NGL for this site: ${st.done}/${st.total} loaded${st.failed.length ? ` · <span style="color:var(--fail)">${st.failed.length} could not be downloaded</span> <details style="display:inline"><summary>why</summary>${st.failed.map(esc).join("<br>")}</details>` : ""}.</p>` : ""}
+    <h3>Tests</h3><div class="tbl-wrap" style="max-height:none;margin-bottom:18px"><table><thead><tr><th>TEST_ID</th><th>Name</th><th>Kind</th>
+    <th>Data checks</th><th class="num">Problems</th><th>Source figure(s)</th><th>Source comparison</th></tr></thead><tbody>
+    ${rows.map(({ t, dat, so, docs, dst, sst }) => `<tr class="clickable" data-tid="${t.testId}"><td>${t.testId}</td><td><b>${esc(t.name)}</b></td><td>${esc(t.kind)}</td>
+      <td>${badge(dst, "data")}</td><td class="num">${dat.filter((f) => f.status === "FAIL").length} ✕ · ${dat.filter((f) => f.status === "UNSURE").length} ?</td>
+      <td>${docs ? `${docs} attached` : `<span class="muted">none attached</span>`}</td><td>${badge(sst, "src")}</td></tr>`).join("")}
+    ${Object.entries(r.obs).map(([fid, o]) => `<tr><td>—</td><td><b>FLDO ${fid}</b></td><td>Field observation</td><td>${badge(o.status, "data")}</td>
+      <td class="num">${o.findings.filter((f) => f.status === "FAIL").length} ✕ · ${o.findings.filter((f) => f.status === "UNSURE").length} ?</td><td></td><td></td></tr>`).join("")}
     </tbody></table></div>
     <details style="margin-bottom:16px"><summary><b>What was loaded and checked</b> (records per NGL table)</summary>
-      <div class="tbl-wrap" style="max-height:none;margin-top:8px"><table><tbody>${r.coverage.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${esc(v)}</td></tr>`).join("")}</tbody></table></div>
-      <p class="small muted">A table with 0 records is either empty for this site or not visible with your role. See the Checks page for what is verified in each table.</p></details>
+      <div class="tbl-wrap" style="max-height:none;margin-top:8px"><table><tbody>${r.coverage.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${esc(v)}</td></tr>`).join("")}</tbody></table></div></details>
     <h3>Findings</h3><p class="small muted" style="margin-top:-4px">Click a finding to open its test with the problem depth highlighted.</p><div id="ft"></div>
     <details style="margin-top:14px"><summary class="small muted">Data loading log</summary><pre class="small">${esc((S.bundle._log || []).join("\n"))}</pre></details>`;
   T.querySelectorAll("tr.clickable").forEach((tr) => (tr.onclick = () => gotoTest(Number(tr.dataset.tid))));
@@ -270,6 +305,31 @@ function testPicker(T, key, ids, r) {
 }
 function pickerHtml(key, ids, sel, r, F) {
   return `<select id="pick">${ids.map((id) => { const st = worst(F.filter((f) => f.testId === id)); return `<option value="${id}" ${id === sel ? "selected" : ""}>${STATUS_ICON[st]} ${esc(r.ctx.label(id))}</option>`; }).join("")}</select>`;
+}
+// source figure + comparison for one test
+function sourceFor(el, tid, r, kind, prefer) {
+  const t = r.perTest[tid], test = r.ctx.test(tid);
+  const docs = [...S.uploads].sort((a, b) => (b.testId === tid) - (a.testId === tid));
+  const head = S.fileStatus && S.fileStatus.done < S.fileStatus.total
+    ? `<p class="small muted">Loading files uploaded to NGL… (${S.fileStatus.done}/${S.fileStatus.total})</p>` : "";
+  el.innerHTML = head + `<div id="srcp"></div>`;
+  src.sourcePanel($("#srcp", el), { docs, series: src.seriesFor(kind, t), tid, label: test?.name, target: r.ctx.label(tid), preferParams: prefer,
+    onResult: (fs, key) => { S.srcFindings[key] = fs; S.res && null; refreshAfterCompare(); } });
+}
+let _refreshT = null;
+function refreshAfterCompare() {
+  // update issue list / badges without losing the source panel state: re-render after a short pause
+  clearTimeout(_refreshT);
+  _refreshT = setTimeout(() => {
+    const F = allFindings(), tid = Object.values(S.sel)[0];
+    const iss = document.getElementById("iss");
+    const tab = S.tab, id = S.sel[tab];
+    if (iss && id !== undefined) {
+      const fs = F.filter((f) => f.testId === id);
+      const plot = document.getElementById("plot");
+      issuesPanel(iss, fs, (f) => plot && plot.data && zoomPlot(plot, f, null));
+    }
+  }, 50);
 }
 function refPanel(el, tid, ctx) {
   if (!S.uploads.length) {
@@ -320,7 +380,7 @@ function tabCpt(T, r, F) {
     viz.cptPlot($("#plot"), t.der, t.raw, fs, t.meta.gwt, S.overlays[tid], liq);
   } else $("#plot").innerHTML = `<div class="empty">No plottable data.</div>`;
   $("#liq") && ($("#liq").onchange = (e) => { S.liq = e.target.checked; pageSite(); });
-  refPanel($("#ref"), tid, r.ctx);
+  sourceFor($("#ref"), tid, r, "CPT", ["qc", "fs", "u2"]);
   const full = t.der ? [Math.max(...t.der.depth) + 0.5, 0] : null;
   $("#rz").onclick = () => t.der && zoomPlot($("#plot"), null, full);
   issuesPanel($("#iss"), fs, (f) => t.der && zoomPlot($("#plot"), f, full));
@@ -348,7 +408,7 @@ function tabBh(T, r, F) {
       (s.specs.length ? s.specs : [{}]).map((sp) => ({ sample: s.name, type: s.type, top: s.top, base: s.base, N: s.spt[0]?.n, ER: s.spt[0]?.er,
         specimen: sp.ref ?? "", spec_top: sp.top, FC_indx: sp.fcIndx, FC_grat: sp.fcGrat, LL: sp.ll, PL: sp.pl, wc: sp.wc }))))}</details>` : ""}`;
   $("#pick").onchange = (e) => { S.sel.bh = Number(e.target.value); pageSite(); };
-  refPanel($("#ref"), tid, r.ctx);
+  sourceFor($("#ref"), tid, r, t.kind, ["N"]);
   const cits = refs.linkedCitations(S.bundle, S.R);
   const { json, warnings } = blv.boringJson(r.ctx, tid, d, fs, cits);
   const name = (r.ctx.test(tid)?.name || "boring").replace(/[^\w.-]+/g, "_");
@@ -391,7 +451,8 @@ function tabVs(T, r, F) {
   T.innerHTML = `<div class="toolbar">${pickerHtml("vs", ids, tid, r, F)} ${badge(worst(fs))}
     <label class="row" style="margin:0;font-weight:400"><input type="checkbox" id="cv" style="width:auto" ${S.vsCpt !== false ? "checked" : ""}> overlay CPT-based Vs</label></div>
     <div class="grid2"><div><div class="row small" style="justify-content:flex-end"><button id="rz">Reset zoom</button></div><div class="plot" id="plot"></div></div>
-      <div><div id="iss"></div><h3 style="margin-top:14px">Dispersion curve</h3><div class="plot" id="disp"></div></div></div>`;
+      <div><div id="iss"></div><h3 style="margin-top:14px">Dispersion curve</h3><div class="plot" id="disp"></div></div></div>
+    <h3 style="margin-top:16px">Source figure</h3><div id="ref"></div>`;
   $("#pick").onchange = (e) => { S.sel.vs = Number(e.target.value); pageSite(); };
   $("#cv").onchange = (e) => { S.vsCpt = e.target.checked; pageSite(); };
   viz.vsPlot($("#plot"), t.data.profiles, fs, S.vsCpt !== false ? r.cptDers : null, r.ctx.gwtFor(tid).gwt);
@@ -399,6 +460,7 @@ function tabVs(T, r, F) {
   const zmax = Math.max(5, ...t.data.profiles.flatMap((p) => p.top)) + 5;
   $("#rz").onclick = () => zoomPlot($("#plot"), null, [zmax, 0]);
   issuesPanel($("#iss"), fs, (f) => zoomPlot($("#plot"), f, [zmax, 0]));
+  sourceFor($("#ref"), tid, r, "Vs", ["Vs"]);
 }
 
 function tabRefs(T, r, F) {
@@ -408,10 +470,8 @@ function tabRefs(T, r, F) {
       <h3>Files attached in NGL</h3>
       ${files.length ? `<div class="tbl-wrap" style="max-height:300px"><table><thead><tr><th>File</th><th>Caption</th><th>Attached to</th><th></th></tr></thead><tbody>
         ${files.map((f, i) => `<tr><td>${esc(f.name)}<div class="small muted">${esc(f.type)}</div></td><td>${esc(f.caption)}</td><td class="small">${esc(f.attachedTo)}</td>
-        <td><button data-i="${i}" class="fetch" ${isDemo() ? "disabled" : ""}>Fetch</button></td></tr>`).join("")}</tbody></table></div>
-        <details style="margin-top:8px"><summary class="small">File download URL pattern</summary>
-          <p class="small muted">The API returns file metadata only. If the NGL website has a download link for files, enter its pattern ({origin}, {FILE_ID}, {FILE_NAME}).</p>
-          <input id="tpl" value="${esc(tpl)}"></details>` : `<p class="muted">No file metadata returned for this site.</p>`}
+        <td>${S.uploads.some((u) => String(u.fileId) === String(f.fileId)) ? '<span class="badge b-PASS">loaded</span>' : `<button data-i="${i}" class="fetch" ${isDemo() ? "disabled" : ""}>Download</button>`}</td></tr>`).join("")}</tbody></table></div>
+        ` : `<p class="muted">No file metadata returned for this site.</p>`}
       <h3 style="margin-top:18px">Citations</h3>
       ${cits.length ? `<div class="tbl-wrap" style="max-height:300px"><table><thead><tr><th>Reference</th><th>Linked to</th><th></th></tr></thead><tbody>
         ${cits.map((c) => `<tr><td>${esc(c.authors ?? "")} ${c.year ? "(" + esc(c.year) + ")" : ""} <b>${esc(c.title ?? "")}</b>${c.doi ? `<div class="small muted">doi:${esc(c.doi)}</div>` : ""}</td>
@@ -447,15 +507,14 @@ function tabRefs(T, r, F) {
   $("#tpl") && ($("#tpl").onchange = (e) => ls.set("ngl_file_tpl", e.target.value));
   T.querySelectorAll(".fetch").forEach((b) => (b.onclick = async () => {
     const f = files[Number(b.dataset.i)];
-    const url = ls.get("ngl_file_tpl", tpl).replace("{origin}", API_BASE || NGL_ORIGIN).replace("{FILE_ID}", f.fileId).replace("{FILE_NAME}", encodeURIComponent(f.name));
     b.disabled = true; b.textContent = "…";
-    const res = await client.tryDownload(url);
-    if (res.data) { await addUpload(f.name, res.type, res.data); pageSite(); }
-    else { alertBox(`Could not download ${f.name}: ${res.error}. Set the download URL pattern, or download it on the NGL website and drop it here.`); b.disabled = false; b.textContent = "Fetch"; }
+    const res = await client.getFile(f.fileId);
+    if (res.data) { await addUpload(res.name || f.name, res.type || f.type, res.data, { fileId: f.fileId, caption: f.caption, attachedTo: f.attachedTo, testId: (String(f.attachedTo).match(/^TEST_ID=(\d+)/) || [])[1] * 1 || null, fromNgl: true }); pageSite(); }
+    else { alertBox(`Could not download ${f.name}: ${res.error}`); b.disabled = false; b.textContent = "Retry"; }
   }));
 }
-async function addUpload(name, type, data) {
-  const u = { name, type, data };
+async function addUpload(name, type, data, meta = {}) {
+  const u = { name, type, data, ...meta };
   if (/pdf/i.test(type) || /\.pdf$/i.test(name)) {
     try { u.pdf = await refs.loadPdf(data.slice(0)); } catch (e) { alertBox(`Could not read ${name}: ${e.message}`); return; }
   } else u.url = URL.createObjectURL(new Blob([data], { type: type || "image/png" }));

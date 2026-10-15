@@ -101,6 +101,20 @@ Boring logs are drawn by the UCLA Geo Boring Log Viewer API (`https://uclageo.co
 - **Download log JSON** gives the exact JSON sent, which you can open in the viewer page.
 - If the viewer can't be reached, a built-in log is shown instead.
 
+## Comparing with the uploaded source files
+
+The NGL REST API returns file **metadata** only. The files themselves (report figures, boring logs) come from the website at `/downloads/download-file-by-i-d/{FILE_ID}`, which needs a website login. So:
+
+- **Signing in:** when you sign in, the tool also logs in to the NGL website through `api/ngl-site.js` (on Vercel) or `dev_server.py` (locally). It keeps only the website session cookie in the browser tab.
+- **Loading files:** opening a site downloads every file attached to it through SITF, TESF, FLDF and SAMF. Each file is listed with the test it belongs to.
+- **Figure overlay** (CPT tab, Boreholes tab and Vs tab):
+  1. Choose the source figure. The one attached to the test is marked ★.
+  2. Click two ticks on the value axis and two on the depth axis, and type their values. The figure can use any units.
+  3. The NGL data is drawn on the figure in red.
+  4. **Compare with NGL** traces the figure's curve at each depth. It reports the depth ranges where NGL differs from the figure, and the share of depths that match.
+- **Text comparison:** for PDFs with a text layer, SPT N, layer boundary depths, USCS symbols and groundwater depth are compared value by value with the report, using the pages that name the boring.
+- **Verdicts:** every test has two results, **Data checks** (internal consistency) and **Source comparison**. A test is "Matches source" only after it has actually been compared with a source file.
+
 ## Notes
 
 - The NGL API is read-only, so the review status itself is still recorded on the NGL website. The tool exports the reviewer report to attach there.

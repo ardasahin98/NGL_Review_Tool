@@ -110,3 +110,17 @@ details summary { cursor: pointer; font-weight: 500; }
 .logbox .flash { position: absolute; left: 0; right: 0; pointer-events: none; border: 2px solid var(--fail); border-radius: 4px; animation: pulse 1.2s ease-in-out 3; }
 .logbox .flash.UNSURE { border-color: var(--unsure); }
 @keyframes pulse { 50% { opacity: .25; } }
+/* source comparison panel */
+.srcbar { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.srccal { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: #fafcff; }
+.srccal select { width: auto; padding: 4px 6px; }
+.calgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 6px; }
+.calgrid > div { display: flex; flex-direction: column; gap: 3px; }
+.calgrid button { padding: 3px 6px; font-size: 12px; justify-content: center; }
+.calgrid input { padding: 4px 6px; }
+.calgrid .pxv { font-size: 11px; color: var(--pass); text-align: center; }
+.swatch { display: inline-block; width: 16px; height: 16px; border: 1px solid var(--line); border-radius: 3px; vertical-align: middle; }
+.srcwrap { position: relative; border: 1px solid var(--line); border-radius: 6px; overflow: auto; max-height: 900px; background: #fff; }
+.srcwrap canvas { display: block; width: 100%; }
+.srcwrap #sov { position: absolute; left: 0; top: 0; }
+#sres { margin-top: 8px; }

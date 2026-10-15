@@ -4,6 +4,8 @@
 // (avoids CORS). When the app is hosted on the NGL website itself, call the API directly.
 export const NGL_ORIGIN = "https://nextgenerationliquefaction.org";
 export const API_BASE = location.hostname.endsWith("nextgenerationliquefaction.org") ? "" : "/api/ngl";
+// website session + uploaded file contents (see api/ngl-site.js)
+export const SITE_BASE = "/api/ngl-site";
 
 export const ENDPOINTS = {
   SITE: "/sites/api-index", TEST: "/field-tests/api-index", FLDO: "/field-observations/api-index",
@@ -105,7 +107,7 @@ export const THRESH = {
 };
 
 export const STATUS_ORDER = { FAIL: 0, UNSURE: 1, PASS: 2 };
-export const STATUS_LABEL = { FAIL: "Inconsistent", UNSURE: "Not sure", PASS: "Consistent" };
+export const STATUS_LABEL = { FAIL: "Inconsistent", UNSURE: "Not sure", PASS: "Passed" };
 export const STATUS_ICON = { FAIL: "✕", UNSURE: "?", PASS: "✓" };
 
 // Privilege levels offered at sign-in. NGL has admin / reviewer / event permissions in its

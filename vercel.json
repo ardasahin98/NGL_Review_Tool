@@ -1,9 +1,11 @@
 {
   "rewrites": [
+    { "source": "/api/ngl-site/:action", "destination": "/api/ngl-site?action=:action" },
     { "source": "/api/ngl/:path*", "destination": "/api/ngl?path=:path*" }
   ],
   "functions": {
-    "api/ngl.js": { "maxDuration": 60 }
+    "api/ngl.js": { "maxDuration": 60 },
+    "api/ngl-site.js": { "maxDuration": 60 }
   },
   "headers": [
     {

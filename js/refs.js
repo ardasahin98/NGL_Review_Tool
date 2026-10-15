@@ -89,22 +89,74 @@ export function matchSequence(texts, values, pageFilter, tol = 0.5) {
   return { ...best, n: vals.length };
 }
 
+// Compare NGL values with the text of an uploaded PDF (boring logs, tables).
+// Values are looked up next to their depth: e.g. for an SPT at 10.0 m the tokens after
+// "10.0" on the log page are read and the first integer is compared with the NGL N.
+const SRC = "Source comparison";
+const tokensOf = (t) => t.replace(/[,;:()]/g, " ").split(/\s+/).filter(Boolean);
+const depthKeys = (d) => [...new Set([d.toFixed(1), d.toFixed(2), String(+d.toFixed(2)), (d / 0.3048).toFixed(1), String(Math.round(d / 0.3048))])];
+function valueAfterDepth(tokens, d, pick, look = 6) {
+  const keys = depthKeys(d);
+  for (let i = 0; i < tokens.length; i++) {
+    if (!keys.includes(tokens[i])) continue;
+    for (let k = i + 1; k <= i + look && k < tokens.length; k++) { const v = pick(tokens[k]); if (v !== null) return { v, at: i }; }
+    return { v: null, at: i };
+  }
+  return null;
+}
 export function referenceChecks(pdf, name, ctx, perTest) {
   const out = [];
-  const F = (status, check, message, target, where, testId) => out.push({ status, group: "Reference", check, message, target, where, testId, depths: [], points: [] });
-  if (!pdf.texts.some((t) => t.trim())) { F("UNSURE", "PDF text", `${name}: no text layer (scanned). Compare visually or digitise the figure.`, name, "", null); return out; }
+  const F = (status, check, message, target, where, testId, depths = [], group = SRC) => out.push({ status, group, check, message, target, where, testId, depths, points: [], sampIds: [] });
+  if (!pdf.texts.some((t) => t.trim())) { F("UNSURE", "PDF text", `${name}: no text layer (scanned image) – use the figure overlay to compare.`, name, "", null, [], "Reference"); return out; }
   const names = ctx.tests.map((t) => t.name);
   const hits = findMentions(pdf.texts, names);
   for (const t of ctx.tests) {
     const pg = hits[t.name] || [];
-    if (pg.length) F("PASS", "Test named in reference", `'${t.name}' appears in ${name} on page(s) ${pg.slice(0, 10).join(", ")}.`, ctx.label(t.testId), `${name} p.${pg[0]}`, t.testId);
     const r = perTest[t.testId];
-    if (r && (r.kind === "Borehole" || r.kind === "Test pit") && r.data?.spt?.length) {
-      const m = matchSequence(pdf.texts, r.data.spt.map((s) => s.n), new Set(pg));
-      if (m.n) {
-        const frac = m.k / m.n;
-        F(frac >= 0.8 ? "PASS" : "UNSURE", "SPT N vs reference", `${m.k}/${m.n} SPT N values found in the same order on page ${m.page} of ${name}.` +
-          (frac >= 0.8 ? "" : " Low match – may be a scanned or graphic log; compare visually."), ctx.label(t.testId), `${name} p.${m.page}`, t.testId);
+    if (!r || !(r.kind === "Borehole" || r.kind === "Test pit")) continue;
+    // only compare on pages that name this boring (or on its own attached file)
+    const pages = pg.length ? pg : [];
+    if (!pages.length) continue;
+    const toks = tokensOf(pages.map((p) => pdf.texts[p - 1]).join(" "));
+    const where = `${name} p.${pages.join(",")}`;
+    const lab = ctx.label(t.testId);
+    // SPT N next to its depth
+    const int = (x) => (/^\d{1,3}$/.test(x) ? Number(x) : /^(\d{1,3})\/\d/.test(x) ? Number(x.split("/")[0]) : null);
+    let nOk = 0, nBad = [], nMiss = 0;
+    for (const sp of r.data.spt || []) {
+      if (!Number.isFinite(sp.n)) continue;
+      const hit = valueAfterDepth(toks, sp.depth, int);
+      if (!hit || hit.v === null) { nMiss++; continue; }
+      if (Math.abs(hit.v - sp.n) <= 0.5) nOk++; else nBad.push([sp, hit.v]);
+    }
+    for (const [sp, v] of nBad) F("FAIL", "SPT N differs from report", `At ${sp.depth} m the report shows N = ${v}, NGL has N = ${sp.n}.`, lab, where, t.testId, [sp.depth]);
+    if (nOk + nBad.length) F(nBad.length ? (nOk ? "UNSURE" : "FAIL") : "PASS", "SPT N vs report", `${nOk} of ${nOk + nBad.length} SPT N values found next to their depth in the report match NGL${nMiss ? `; ${nMiss} depth(s) not found in the text` : ""}.`, lab, where, t.testId);
+    else if ((r.data.spt || []).length) F("UNSURE", "SPT N vs report", `None of the SPT depths were found in the report text (${name}) – graphic log? Use the figure overlay.`, lab, where, t.testId);
+    // layer boundaries and USCS symbols
+    const lay = r.data.layers || [];
+    if (lay.length) {
+      const bounds = [...new Set(lay.flatMap((l) => [l.top, l.base]).filter((x) => Number.isFinite(x) && x > 0))];
+      const found = bounds.filter((b) => depthKeys(b).some((k) => toks.includes(k)));
+      const missing = bounds.filter((b) => !found.includes(b));
+      const uscsBad = [];
+      for (const l of lay) {
+        if (!l.uscsRaw) continue;
+        const hit = valueAfterDepth(toks, l.top > 0 ? l.top : l.base, (x) => (/^(GW|GP|GM|GC|SW|SP|SM|SC|ML|CL|MH|CH|OL|OH|PT)(-[A-Z]{2})?$/.test(x.toUpperCase()) ? x.toUpperCase() : null), 12);
+        if (hit && hit.v && l.top > 0 && hit.v !== l.uscsRaw) uscsBad.push([l, hit.v]);
+      }
+      for (const [l, v] of uscsBad) F("UNSURE", "USCS differs from report", `Layer starting at ${l.top} m: report text near that depth shows ${v}, NGL has ${l.uscsRaw}.`, lab, where, t.testId, [l.top]);
+      F(missing.length > bounds.length / 2 ? "UNSURE" : missing.length ? "UNSURE" : "PASS", "Layer depths vs report",
+        `${found.length} of ${bounds.length} NGL layer boundary depths appear in the report text${missing.length ? ` (not found: ${missing.slice(0, 8).map((x) => x + " m").join(", ")})` : ""}.`, lab, where, t.testId, missing);
+    }
+    // groundwater
+    const g = ctx.gwtSources().filter((x) => x.testId === t.testId);
+    if (g.length) {
+      const txt = pages.map((p) => pdf.texts[p - 1]).join(" ");
+      const m = txt.match(/(?:ground\s*water|water\s*(?:table|level)|GWT|GWL|W\.?T\.?)[^0-9]{0,30}(\d+(?:\.\d+)?)/i);
+      if (m) {
+        const v = Number(m[1]), d = g[0].depth;
+        const ok = Math.abs(v - d) <= 0.15 || Math.abs(v * 0.3048 - d) <= 0.1;
+        F(ok ? "PASS" : "FAIL", "Groundwater vs report", ok ? `Report gives groundwater at ${v}, NGL has ${d} m.` : `Report gives groundwater at ${v} (m or ft), NGL has ${d} m.`, lab, where, t.testId, ok ? [] : [d]);
       }
     }
   }
@@ -156,4 +208,4 @@ export function overlayCompare(raw, overlay, tid, label) {
   }
   return out;
 }
-const mk = (status, check, message, target, where, testId) => ({ status, group: "Reference", check, message, target, where, testId, depths: [], points: [] });
+const mk = (status, check, message, target, where, testId) => ({ status, group: "Source comparison", check, message, target, where, testId, depths: [], points: [] });
