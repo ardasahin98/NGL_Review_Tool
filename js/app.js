@@ -7,6 +7,7 @@ import { esc, fin, fmt, columns } from "./util.js";
 import { bi2014, lpi } from "./geotech.js";
 import * as viz from "./viz.js";
 import * as refs from "./refs.js";
+import * as blv from "./blv.js";
 import demoData from "./demo-data.js";
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -167,7 +168,7 @@ function findingsTable(el, F, { filters = true, initial = ["FAIL", "UNSURE"] } =
       <select id="fg"><option value="">All groups</option>${groups.map((g) => `<option ${g === grp ? "selected" : ""}>${esc(g)}</option>`).join("")}</select>
       <input type="search" id="fq" placeholder="Search findings…" value="${esc(q)}"></div>` : "") +
       `<div class="tbl-wrap"><table><thead><tr><th>Status</th><th>Group</th><th>Check</th><th>Target</th><th>Where</th><th>Details</th></tr></thead><tbody>
-      ${rows.map((f) => `<tr class="${f.testId ? "clickable" : ""}" data-tid="${f.testId ?? ""}"><td>${badge(f.status)}</td><td>${esc(f.group)}</td><td><b>${esc(f.check)}</b></td>
+      ${rows.map((f) => `<tr class="${f.testId ? "clickable" : ""}" data-tid="${f.testId ?? ""}" data-i="${F.indexOf(f)}"><td>${badge(f.status)}</td><td>${esc(f.group)}</td><td><b>${esc(f.check)}</b></td>
         <td>${esc(f.target)}</td><td class="where">${esc(f.where)}</td><td>${esc(f.message)}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">No findings with these filters.</td></tr>`}
       </tbody></table></div>`;
     if (filters) {
@@ -175,16 +176,47 @@ function findingsTable(el, F, { filters = true, initial = ["FAIL", "UNSURE"] } =
       $("#fg", el).onchange = (e) => { grp = e.target.value; draw(); };
       $("#fq", el).oninput = (e) => { q = e.target.value.toLowerCase(); draw(); const i = $("#fq", el); i.focus(); i.setSelectionRange(q.length, q.length); };
     }
-    el.querySelectorAll("tr.clickable").forEach((tr) => (tr.onclick = () => gotoTest(Number(tr.dataset.tid))));
+    el.querySelectorAll("tr.clickable").forEach((tr) => (tr.onclick = () => gotoTest(Number(tr.dataset.tid), F[Number(tr.dataset.i)])));
   };
   draw();
 }
-function gotoTest(tid) {
+function gotoTest(tid, f = null) {
   const t = results().perTest[tid];
   if (!t) return;
   const tab = { CPT: "cpt", Borehole: "bh", "Test pit": "bh", Vs: "vs" }[t.kind];
   if (!tab) return;
-  S.tab = tab; S.sel[tab] = tid; pageSite(); window.scrollTo({ top: 0, behavior: "smooth" });
+  S.tab = tab; S.sel[tab] = tid; S.focus = f ? fkey(f) : null;
+  pageSite(); window.scrollTo({ top: 0, behavior: "smooth" });
+}
+const fkey = (f) => `${f.testId}|${f.check}|${f.where}|${f.message}`;
+
+// Issues panel: every flag for one test, worst first; "Show" zooms the plot/log to it.
+function issuesPanel(el, fs, onShow) {
+  const flags = fs.filter((f) => f.status !== "PASS");
+  const passed = fs.filter((f) => f.status === "PASS");
+  el.innerHTML = `<div class="issues"><div class="row" style="margin-bottom:6px"><h3 class="grow" style="margin:0">Issues (${flags.length})</h3>
+      ${flags.length ? `<button id="inext" title="Go to the next issue">Next issue ↓</button>` : ""}</div>
+    ${flags.map((f, i) => `<div class="issue ${f.status}" data-i="${i}">
+        <div class="row" style="gap:8px">${badge(f.status)}<b class="grow">${esc(f.check)}</b>${f.depths?.length ? `<button class="show" data-i="${i}">Show ▸</button>` : ""}</div>
+        <div class="small">${esc(f.message)}</div>${f.where ? `<div class="where">${esc(f.where)}</div>` : ""}</div>`).join("") || `<div class="muted">No issues – every check passed.</div>`}
+    <details style="margin-top:8px"><summary class="small">${passed.length} checks passed</summary>
+      ${passed.map((f) => `<div class="small" style="padding:4px 0;border-bottom:1px solid var(--line)">${badge("PASS")} <b>${esc(f.check)}</b> – ${esc(f.message)}</div>`).join("")}</details></div>`;
+  let cur = -1;
+  const pick = (i) => {
+    cur = i;
+    el.querySelectorAll(".issue").forEach((d) => d.classList.toggle("sel", Number(d.dataset.i) === i));
+    el.querySelector(`.issue[data-i="${i}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    onShow(flags[i]);
+  };
+  el.querySelectorAll(".issue").forEach((d) => (d.onclick = () => pick(Number(d.dataset.i))));
+  el.querySelector("#inext")?.addEventListener("click", () => flags.length && pick((cur + 1) % flags.length));
+  if (S.focus) { const i = flags.findIndex((f) => fkey(f) === S.focus); S.focus = null; if (i >= 0) setTimeout(() => pick(i), 300); }
+}
+// zoom a depth plot (Plotly, reversed y) to a finding
+function zoomPlot(el, f, full) {
+  if (!f || !f.depths?.length) { Plotly.relayout(el, { "yaxis.range": full }); return; }
+  const d = f.depths.filter(fin), lo = Math.min(...d), hi = Math.max(...d), pad = Math.max(1, (hi - lo) * 0.5);
+  Plotly.relayout(el, { "yaxis.range": [hi + pad, Math.max(0, lo - pad)], "yaxis.autorange": false });
 }
 
 function tabSummary(T, r, F) {
@@ -196,7 +228,11 @@ function tabSummary(T, r, F) {
       ${["FAIL", "UNSURE", "PASS"].map((s) => `<td class="num">${fs.filter((f) => f.status === s).length}</td>`).join("")}</tr>`).join("")}
     ${Object.entries(r.obs).map(([fid, o]) => `<tr><td>${badge(o.status)}</td><td>—</td><td><b>FLDO ${fid}</b></td><td>Field observation</td><td>FLDO</td>
       ${["FAIL", "UNSURE", "PASS"].map((s) => `<td class="num">${o.findings.filter((f) => f.status === s).length}</td>`).join("")}</tr>`).join("")}
-    </tbody></table></div><h3>Findings</h3><div id="ft"></div>
+    </tbody></table></div>
+    <details style="margin-bottom:16px"><summary><b>What was loaded and checked</b> (records per NGL table)</summary>
+      <div class="tbl-wrap" style="max-height:none;margin-top:8px"><table><tbody>${r.coverage.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${esc(v)}</td></tr>`).join("")}</tbody></table></div>
+      <p class="small muted">A table with 0 records is either empty for this site or not visible with your role. See the Checks page for what is verified in each table.</p></details>
+    <h3>Findings</h3><p class="small muted" style="margin-top:-4px">Click a finding to open its test with the problem depth highlighted.</p><div id="ft"></div>
     <details style="margin-top:14px"><summary class="small muted">Data loading log</summary><pre class="small">${esc((S.bundle._log || []).join("\n"))}</pre></details>`;
   T.querySelectorAll("tr.clickable").forEach((tr) => (tr.onclick = () => gotoTest(Number(tr.dataset.tid))));
   findingsTable($("#ft", T), F);
@@ -270,8 +306,8 @@ function tabCpt(T, r, F) {
   T.innerHTML = `<div class="toolbar">${pickerHtml("cpt", ids, tid, r, F)} ${badge(worst(fs))}
       ${canLiq ? `<label class="row" style="margin:0;font-weight:400"><input type="checkbox" id="liq" style="width:auto" ${S.liq ? "checked" : ""}> BI2014 factor of safety</label>` : ""}
       <span class="grow"></span><span class="legend-flags"><span class="lf">Inconsistent</span><span class="lu">Not sure</span></span></div>
-    <div class="grid2"><div><div class="plot" id="plot"></div><div class="small muted" id="liqtxt"></div></div><div id="ref"></div></div>
-    <h3 style="margin-top:12px">Findings for this CPT</h3><div id="ft"></div>
+    <div class="grid2"><div><div class="row small" style="justify-content:flex-end"><button id="rz">Reset zoom</button></div><div class="plot" id="plot"></div><div class="small muted" id="liqtxt"></div></div>
+      <div><div id="iss"></div><div id="ref" style="margin-top:14px"></div></div></div>
     <details style="margin-top:12px"><summary>Overlay a digitised reference curve (CSV)</summary>
       <p class="small muted">Digitise the CPT plot in the report (e.g. with WebPlotDigitizer) and load a CSV with columns <code>depth,value,param</code> (param = qc, fs or u2; units MPa / kPa as in NGL), or the two-column WebPlotDigitizer export (x = value, y = depth, treated as qc). The tool overlays it and measures the difference.</p>
       <input type="file" id="ov" accept=".csv,.txt" style="width:auto"> ${S.overlays[tid] ? `<button id="ovx">Remove overlay (${S.overlays[tid].length} pts)</button>` : ""}
@@ -284,7 +320,9 @@ function tabCpt(T, r, F) {
   } else $("#plot").innerHTML = `<div class="empty">No plottable data.</div>`;
   $("#liq") && ($("#liq").onchange = (e) => { S.liq = e.target.checked; pageSite(); });
   refPanel($("#ref"), tid, r.ctx);
-  findingsTable($("#ft"), fs, { filters: false });
+  const full = t.der ? [Math.max(...t.der.depth) + 0.5, 0] : null;
+  $("#rz").onclick = () => t.der && zoomPlot($("#plot"), null, full);
+  issuesPanel($("#iss"), fs, (f) => t.der && zoomPlot($("#plot"), f, full));
   $("#ov").onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     const pts = refs.parseOverlayCsv(await f.text());
@@ -299,15 +337,50 @@ function tabBh(T, r, F) {
   const tid = testPicker(T, "bh", ids, r); if (tid === null) return;
   const t = r.perTest[tid], fs = F.filter((f) => f.testId === tid), d = t.data;
   T.innerHTML = `<div class="toolbar">${pickerHtml("bh", ids, tid, r, F)} ${badge(worst(fs))}<span class="grow"></span>
-    <span class="legend-flags"><span class="lf">Inconsistent</span><span class="lu">Not sure</span></span></div>
-    <div class="grid2"><div class="plot" id="plot"></div><div id="ref"></div></div>
-    <h3 style="margin-top:12px">Findings for this borehole</h3><div id="ft"></div>
-    ${[["layers", "Layer descriptions"], ["spt", "SPT results"], ["samples", "Samples / lab"]].filter(([k]) => d[k]?.length)
-      .map(([k, l]) => `<details style="margin-top:10px"><summary>${l} (${d[k].length})</summary>${simpleTable(d[k])}</details>`).join("")}`;
+    <span class="legend-flags"><span class="lf">Inconsistent</span><span class="lu">Not sure</span></span>
+    <button id="dlj" title="Open this in the Boring Log Viewer (Open files…)">Download log JSON</button><button id="dls">Download SVG</button></div>
+    <div class="grid2"><div><div id="logbox" class="logbox"><div class="empty">Drawing the log with the UCLA Geo Boring Log Viewer…</div></div><div class="small muted" id="logmsg"></div></div>
+      <div><div id="iss"></div><div id="ref" style="margin-top:14px"></div></div></div>
+    ${[["layers", "Layer descriptions (STRA)"], ["detl", "Depth notes (DETL)"], ["spt", "SPT results (ISPT)"]].filter(([k]) => d[k]?.length)
+      .map(([k, l]) => `<details style="margin-top:10px"><summary>${l} (${d[k].length})</summary>${simpleTable(d[k])}</details>`).join("")}
+    ${d.samples?.length ? `<details style="margin-top:10px"><summary>Samples and lab results (${d.samples.length})</summary>${simpleTable(d.samples.flatMap((s) =>
+      (s.specs.length ? s.specs : [{}]).map((sp) => ({ sample: s.name, type: s.type, top: s.top, base: s.base, N: s.spt[0]?.n, ER: s.spt[0]?.er,
+        specimen: sp.ref ?? "", spec_top: sp.top, FC_indx: sp.fcIndx, FC_grat: sp.fcGrat, LL: sp.ll, PL: sp.pl, wc: sp.wc }))))}</details>` : ""}`;
   $("#pick").onchange = (e) => { S.sel.bh = Number(e.target.value); pageSite(); };
-  viz.borelogPlot($("#plot"), d, fs, r.ctx.gwtFor(tid).gwt);
   refPanel($("#ref"), tid, r.ctx);
-  findingsTable($("#ft"), fs, { filters: false });
+  const cits = refs.linkedCitations(S.bundle, S.R);
+  const { json, warnings } = blv.boringJson(r.ctx, tid, d, fs, cits);
+  const name = (r.ctx.test(tid)?.name || "boring").replace(/[^\w.-]+/g, "_");
+  $("#dlj").onclick = () => download(`${name}.json`, JSON.stringify(json, null, 2), "application/json");
+  let svgText = null, depthMap = null;
+  const box = $("#logbox");
+  const show = (f) => {
+    box.querySelectorAll(".flash").forEach((x) => x.remove());
+    if (!depthMap) { const pl = $("#plotbh"); if (pl) zoomPlot(pl, f, [Math.max(1, d.depth || 10) + 0.5, 0]); return; }
+    if (!f?.depths?.length) return;
+    const dd = f.depths.filter(fin), lo = Math.min(...dd), hi = Math.max(...dd);
+    const svgEl = box.querySelector("svg"); if (!svgEl) return;
+    const scale = svgEl.getBoundingClientRect().width / (parseFloat(svgEl.getAttribute("width")) || svgEl.getBoundingClientRect().width);
+    const y0 = depthMap(lo - 0.1) * scale, y1 = depthMap(hi + 0.1) * scale;
+    const mark = document.createElement("div");
+    mark.className = "flash " + f.status;
+    Object.assign(mark.style, { top: y0 + "px", height: Math.max(6, y1 - y0) + "px" });
+    box.appendChild(mark);
+    box.scrollTo({ top: Math.max(0, y0 - 120), behavior: "smooth" });
+  };
+  issuesPanel($("#iss"), fs, show);
+  blv.renderBoring(json, { width: 900 }).then(({ svg, warnings: w }) => {
+    const sh = blv.shadeSvg(svg, fs);
+    svgText = sh.svg; depthMap = sh.map;
+    box.innerHTML = svgText;
+    const el = box.querySelector("svg"); if (el) { el.style.width = "100%"; el.style.height = "auto"; }
+    $("#logmsg").textContent = [w ? "Viewer warnings: " + w : "", warnings.join("; ")].filter(Boolean).join(" · ");
+  }).catch((e) => {
+    $("#logmsg").textContent = `Boring Log Viewer not reachable (${e.message}). Showing the built-in log instead.`;
+    box.innerHTML = `<div class="plot" id="plotbh"></div>`;
+    viz.borelogPlot($("#plotbh"), d, fs, r.ctx.gwtFor(tid).gwt);
+  });
+  $("#dls").onclick = () => svgText ? download(`${name}.svg`, svgText, "image/svg+xml") : alertBox("The log has not been drawn yet.");
 }
 
 function tabVs(T, r, F) {
@@ -316,13 +389,15 @@ function tabVs(T, r, F) {
   const t = r.perTest[tid], fs = F.filter((f) => f.testId === tid);
   T.innerHTML = `<div class="toolbar">${pickerHtml("vs", ids, tid, r, F)} ${badge(worst(fs))}
     <label class="row" style="margin:0;font-weight:400"><input type="checkbox" id="cv" style="width:auto" ${S.vsCpt !== false ? "checked" : ""}> overlay CPT-based Vs</label></div>
-    <div class="grid2"><div class="plot" id="plot"></div><div><h3>Dispersion curve</h3><div class="plot" id="disp"></div></div></div>
-    <h3 style="margin-top:12px">Findings for this profile</h3><div id="ft"></div>`;
+    <div class="grid2"><div><div class="row small" style="justify-content:flex-end"><button id="rz">Reset zoom</button></div><div class="plot" id="plot"></div></div>
+      <div><div id="iss"></div><h3 style="margin-top:14px">Dispersion curve</h3><div class="plot" id="disp"></div></div></div>`;
   $("#pick").onchange = (e) => { S.sel.vs = Number(e.target.value); pageSite(); };
   $("#cv").onchange = (e) => { S.vsCpt = e.target.checked; pageSite(); };
   viz.vsPlot($("#plot"), t.data.profiles, fs, S.vsCpt !== false ? r.cptDers : null, r.ctx.gwtFor(tid).gwt);
   if (t.data.disp) viz.dispersionPlot($("#disp"), t.data.disp); else $("#disp").innerHTML = `<div class="empty">No dispersion data.</div>`;
-  findingsTable($("#ft"), fs, { filters: false });
+  const zmax = Math.max(5, ...t.data.profiles.flatMap((p) => p.top)) + 5;
+  $("#rz").onclick = () => zoomPlot($("#plot"), null, [zmax, 0]);
+  issuesPanel($("#iss"), fs, (f) => zoomPlot($("#plot"), f, [zmax, 0]));
 }
 
 function tabRefs(T, r, F) {
@@ -483,24 +558,36 @@ function pageSchema() {
 
 // ------------------------------------------------------------------ about
 function pageAbout() {
-  view.innerHTML = `<div class="card" style="max-width:980px"><h1>What the tool checks</h1>
-  <p>Every check returns one of three verdicts and says <b>where</b> it found the problem (depth, layer, coordinates). A test's verdict is its worst finding. Plots show red bands at inconsistent depths and orange bands at “not sure” depths.</p>
-  <p>${badge("FAIL")} data contradicts itself, physics or the reference · ${badge("UNSURE")} suspicious but possibly valid, or the check could not run · ${badge("PASS")} check ran and passed</p>
-  <h3>Site</h3><ul><li>Test coordinates within 500 m of the site (consistent), 0.5–2 km (not sure), &gt; 2 km (inconsistent); missing coordinates</li><li>Duplicate tests at the same location</li><li>GWT agreement across SCPG / BORH / WATR (spread ≤ 1 m, 1–3 m, &gt; 3 m)</li></ul>
-  <h3>CPT</h3><ul><li>Depth strictly increasing, no duplicates; data gaps; late start (predrill)</li><li><b>Units</b>: median qc, median Rf, and &gt;200× jumps between readings (a block entered in different units)</li>
-  <li>Physical ranges (qc ≤ 0 or &gt; 120 MPa, fs &lt; 0, Rf &gt; 15 %), isolated spikes</li><li>Cone area ratio reported and in 0.5–0.9</li>
-  <li><b>GWT from u2</b>: in clean-sand layers (Ic &lt; 2.05) the u2 readings give an estimated GWT, compared with the reported value; u2 ≈ 0 below the GWT is flagged</li>
-  <li>Stored qt / Ic vs recomputed (Robertson 2009)</li><li>Soil behaviour type vs boring logs within 50 m (only “not sure” – spatial variability)</li></ul>
-  <h3>Borehole / SPT / lab</h3><ul><li>SPT depth order, inside the hole, N range, energy ratio 40–100 %, N60 = N·ER/60</li><li>Layer geometry: base &gt; top, overlaps, gaps, log depth vs hole depth</li>
-  <li><b>N vs description</b>: density/consistency term (very loose … very dense, very soft … hard) vs the SPT N class</li>
-  <li><b>Lab vs USCS</b>: fines content vs symbol (SP/SW &lt; 5 %, dual 5–12 %, SM/SC 12–50 %, fines ≥ 50 %); LL ≥ PL; PI = LL − PL; A-line and LL = 50</li></ul>
-  <h3>Vs</h3><ul><li>Layer geometry, Vs 30–3500 m/s, Vp &gt; Vs, Vp ≥ 1300 m/s below the GWT</li><li>Velocity reversals &gt; 40 % (not sure)</li><li>Stored VS30 vs computed from the profile</li>
-  <li>Dispersion curve vs profile (approximate λ/2.5 rule – not sure only)</li><li>Measured Vs vs CPT-based Vs (Robertson 2009) within 100 m: ratio ≤ 1.5 / ≤ 2.5 / &gt; 2.5 (catches ft/s vs m/s)</li></ul>
-  <h3>Field observations / lateral spreading</h3><ul><li>Location vs site; observation date after the event; epicentral distance plausible for the magnitude</li><li>PGA present and within 0.005–2.5 g</li>
-  <li>Displacement vectors: magnitude = √(E² + N²); very large values; vectors pointing &gt; 90° away from their neighbours within 200 m</li><li>Manifestation vs CPT-based LPI (Boulanger &amp; Idriss 2014) – a model check, so never “inconsistent”</li></ul>
-  <h3>References</h3><ul><li>NGL file metadata and citations, with DOI / search links</li><li>Uploaded PDFs: searched for test names (matching page shown beside the plot) and <b>SPT N sequences</b> matched in order against the log page</li>
-  <li>Digitised curves (CSV): overlaid on the CPT plot; median relative difference ≤ 15 % / ≤ 35 % / &gt; 35 %, and constant depth shifts are detected</li></ul>
-  <p class="muted small">Thresholds are in <code>js/config.js</code> (THRESH). Use the Calibration page to see which checks raise too many false alarms on reviewed sites.</p></div>`;
+  const sec = (title, tables, items) => `<h3>${title} <span class="small muted">${tables}</span></h3><ul>${items.map((x) => `<li>${x}</li>`).join("")}</ul>`;
+  view.innerHTML = `<div class="card" style="max-width:1000px"><h1>What the tool checks</h1>
+  <p>Every check returns ${badge("FAIL")} (data contradict themselves, physics or the reference), ${badge("UNSURE")} (suspicious but possibly valid, or the check could not run) or ${badge("PASS")}, and says <b>where</b> (test, sample, depth, coordinates). A test's status is its worst finding. In each test tab the <b>Issues</b> list is in order of severity; <b>Show</b> / <b>Next issue</b> zoom the plot or boring log to the problem depth.</p>
+  ${sec("Site", "SITE, TEST, WATR, SITP/TESP/FLDP", ["Site coordinates present and valid; every test within 500 m (2 km = inconsistent); swapped lat/lon hint",
+    "<b>Test names</b>: duplicates at the site; names that look like another test type (e.g. a “CPT-…” stored as BORH)", "Possible duplicate tests at the same location; tests with no data rows",
+    "<b>Groundwater</b>: spread of all WATR depths at the site (≤ 1 m / 1–3 m / > 3 m), negative depths, GWT below the bottom of a boring",
+    "Submission/review status: site submitted but tests not (TEST_STAT), site reviewed but tests not; no citation linked"])}
+  ${sec("CPT", "SCPG, SCPT (qc, fs, u stored in MPa)", ["SCPG header present; cone size 10/15 cm²; pore-pressure position (SCPG_PWP) u2 or not",
+    "Depth strictly increasing, duplicates, gaps, late start (predrill)", "<b>Units</b>: median qc and Rf, and &gt;200× jumps between readings (a block entered in another unit)",
+    "Ranges: qc ≤ 0 or &gt; 120 MPa, fs &lt; 0, Rf &gt; 15 %, isolated spikes, strongly negative u", "<b>GWT from u2</b> in clean-sand layers vs WATR; u ≈ 0 below the GWT",
+    "Soil behaviour type (Ic) vs boring logs within 50 m (only “not sure”)"])}
+  ${sec("Borings, strata and SPT", "BORH, STRA, DETL, SAMP_TEST, SAMP, ISPT", ["Layer geometry: base &gt; top, missing bases, first layer at the surface, overlaps (inconsistent), gaps (not sure)",
+    "<b>USCS</b>: valid symbol, missing symbol, symbol vs description (coarse vs fine); empty descriptions; DETL notes outside the log",
+    "<b>Samples</b>: valid top/base, overlaps, duplicate or missing <b>names</b>, samples below the logged depth",
+    "<b>SPT</b>: ISPT depth inside its sample, sampler type split-barrel, duplicated depths, N range / missing N, partial penetration (ISPT_TPEN), energy ratio present and 40–100 %",
+    "<b>N vs description</b>: density/consistency term of the layer or nearby DETL note vs the N class"])}
+  ${sec("Lab (plasticity, gradation, index)", "SPEC, GRAG, GRAT, PLAS, INDX", ["Specimen depth inside its sample", "<b>Gradation</b>: % passing 0–100, curve monotonic, reaches the No. 200 sieve",
+    "<b>Fines</b>: INDX_FINE vs fines read from the gradation curve; fines vs USCS symbol (SP/SW &lt; 5 %, dual 5–12 %, SM/SC 12–50 %, fines ≥ 50 %)",
+    "<b>Plasticity</b>: LL 10–300, PL ≤ LL, both reported, one record per specimen, A-line and LL = 50 vs CL/CH/ML/MH, limits reported for clean sand",
+    "Index: water content 0–300 % and vs LL, Gs 2.4–3.0, density 1.2–2.4 g/cm³"])}
+  ${sec("Vs", "GSWG, SWVG, SWVD, GSWD, GINV, GIND", ["Layer geometry: starts at the surface, SWVD_BTTM = next top, bottom &gt; top; duplicate depths",
+    "Vs 30–3500 m/s (ft/s?), Vp &gt; Vs, Vp ≥ 1300 m/s below the GWT, velocity reversals &gt; 40 %", "Dispersion curve vs profile (approximate λ/2.5 rule)",
+    "Measured Vs vs CPT-based Vs (Robertson 2009) within 100 m"])}
+  ${sec("Field observations", "FLDO, FLDM, FLDD, GMIM, EVNT", ["Description present; manifestation and vector points near the site; event linked, magnitude, plausible epicentral distance",
+    "PGA present, unit (GMIM_UNIT) and 0.005–2.5 g", "Manifestation flags consistent (no surface evidence but sand boil / lateral spread flagged)",
+    "Vectors: azimuth 0–360°, HDIS ≥ 0, very large values, direction vs neighbours, displacements without a lateral-spread flag",
+    "Observed manifestation vs CPT-based LPI (Boulanger &amp; Idriss 2014) – model check, never “inconsistent”"])}
+  ${sec("References", "uploaded PDFs, digitised curves", ["Test names found in the PDF text, matching page shown beside the plot", "SPT N sequence found in order on the log page",
+    "Digitised CPT curves: median difference and constant depth shift"])}
+  <p class="muted small">Thresholds are in <code>js/config.js</code> (THRESH). Boring logs are drawn by the UCLA Geo Boring Log Viewer API, with the review flags in a “Review flags” column and flagged depths shaded.</p></div>`;
 }
 
 // ------------------------------------------------------------------ helpers

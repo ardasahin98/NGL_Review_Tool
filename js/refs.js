@@ -10,7 +10,7 @@ export function linkedFiles(B, R) {
   for (const [j, key] of Object.entries(JUNCTIONS)) {
     const J = B[j] || [];
     if (!J.length || !("FILE_ID" in J[0])) continue;
-    const cap = columns(J).find((c) => c.toUpperCase().includes("CAP"));
+    const cap = columns(J).find((c) => /CAP|DESC/i.test(c));
     for (const r of J) {
       const m = F.filter((f) => num(f.FILE_ID) === num(r.FILE_ID));
       out.push({ attachedTo: `${key}=${r[key]}`, fileId: r.FILE_ID, caption: cap ? r[cap] ?? "" : "",
@@ -29,11 +29,13 @@ export function linkedCitations(B, R) {
       if (seen.has(id)) { seen.get(id).attachedTo.push(`${key}=${r[key]}`); continue; }
       const m = C.filter((c) => num(c.CITATION_ID) === id);
       const d = { id, attachedTo: [`${key}=${r[key]}`] };
-      for (const k of ["authors", "year", "title", "doi", "url"]) d[k] = R.first("CITATION", m, k);
-      if (!d.title && m.length) d.title = Object.values(m[0]).filter((v) => typeof v === "string").join(" | ").slice(0, 300);
-      if (d.doi) d.link = "https://doi.org/" + String(d.doi).trim().replace("https://doi.org/", "");
-      else if (d.url) d.link = d.url;
-      else if (d.title) d.link = "https://scholar.google.com/scholar?q=" + encodeURIComponent(d.title);
+      d.title = R.first("CITATION", m, "text") ?? (m.length ? Object.values(m[0]).filter((v) => typeof v === "string").join(" | ").slice(0, 300) : "");
+      const url = String(R.first("CITATION", m, "url") ?? "").trim();
+      const doi = url.match(/10\.\d{4,9}\/[^\s]+/);
+      if (/^https?:\/\//i.test(url)) d.link = url;
+      else if (doi) d.link = "https://doi.org/" + doi[0];
+      else if (d.title) d.link = "https://scholar.google.com/scholar?q=" + encodeURIComponent(String(d.title).slice(0, 200));
+      d.doi = doi ? doi[0] : "";
       seen.set(id, d);
     }
   }

@@ -50,36 +50,57 @@ export async function verifyRole() {
 }
 
 export class NGLClient {
-  constructor() { this._cols = {}; }
+  constructor() { this._cols = {}; this.pageInfo = {}; }
 
   headers() {
     const s = session.get();
     if (!s) throw new NGLError("Session expired – please log in again.");
-    return { Accept: "application/json", "Content-Type": "application/json", Authorization: "Bearer " + s.token };
+    return { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded", Authorization: "Bearer " + s.token };
   }
 
-  // all rows matching `where` (follows pagination); POST with JSON body
-  // elevated: undefined -> follow the signed-in role; false -> force a plain user request
-  async query(table, { where, select, includeUnreviewed = true, limit = 5000, maxPages = 200, sort, elevated, roleOverride } = {}) {
-    const roleParam = roleOverride ? ROLES[roleOverride].param : elevated === false ? null : session.roleParam();
+  async _post(path, params) {
+    const r = await fetch(API_BASE + path, { method: "POST", headers: this.headers(), body: new URLSearchParams(params).toString() });
+    let js;
+    try { js = await r.json(); } catch { throw new NGLError(`${path}: HTTP ${r.status} (not JSON)`); }
+    if (!r.ok || !Array.isArray(js)) {
+      const msg = (js && js.errorMessage) || JSON.stringify(js).slice(0, 200);
+      throw new NGLError(`${path}: HTTP ${r.status}: ${String(msg).replace(/<br>/g, "; ")}`);
+    }
+    return js;
+  }
+
+  // All rows matching `where`. Paging is defensive: if NGL returns fewer rows than asked
+  // for on the first page (a server-side page-size cap), keep paging with that page size
+  // until a short or empty page, de-duplicating on the primary key.
+  //   includeUnreviewed: undefined -> follow the signed-in role
+  //   elevated: false -> never send role=admin
+  async query(table, { where, select, includeUnreviewed, limit = 1000, maxPages = 500, sort, elevated } = {}) {
     const path = ENDPOINTS[table] || table;
-    const rows = [];
+    const role = session.role();
+    const roleParam = elevated === false ? null : ROLES[role].param;
+    const unrev = includeUnreviewed === undefined ? ROLES[role].unreviewed : includeUnreviewed;
+    const base = {};
+    if (where) base.where = where;
+    if (select) base.select = Array.isArray(select) ? select.join(",") : select;
+    base.includeUnreviewed = unrev ? 1 : 0;
+    if (sort) base.sort = sort;
+    if (roleParam) base.role = roleParam;
+    const pk = (table in ENDPOINTS ? table : "") + "_ID";
+    const rows = [], seen = new Set();
+    let size = limit;
     for (let page = 1; page <= maxPages; page++) {
-      const body = { limit, page };
-      if (where) body.where = where;
-      if (select) body.select = Array.isArray(select) ? select.join(",") : select;
-      if (includeUnreviewed) body.includeUnreviewed = 1;
-      if (sort) body.sort = sort;
-      if (roleParam) body.role = roleParam;
-      const r = await fetch(API_BASE + path, { method: "POST", headers: this.headers(), body: JSON.stringify(body) });
-      let js;
-      try { js = await r.json(); } catch { throw new NGLError(`${table}: HTTP ${r.status} (not JSON)`); }
-      if (!r.ok || !Array.isArray(js)) {
-        const msg = (js && js.errorMessage) || JSON.stringify(js).slice(0, 200);
-        throw new NGLError(`${table}: HTTP ${r.status}: ${String(msg).replace(/<br>/g, "; ")}`);
+      const batch = await this._post(path, { ...base, limit: size, page });
+      if (page === 1 && batch.length > 0 && batch.length < size && maxPages > 1) {
+        // maybe a capped page size: probe page 2 with the observed size
+        size = batch.length;
       }
-      rows.push(...js);
-      if (js.length < limit) break;
+      let fresh = 0;
+      for (const r of batch) {
+        const k = r[pk] ?? JSON.stringify(r);
+        if (!seen.has(k)) { seen.add(k); rows.push(r); fresh++; }
+      }
+      this.pageInfo[table] = { pageSize: size, pages: page, rows: rows.length };
+      if (batch.length < size || fresh === 0) break;
     }
     return rows;
   }
@@ -103,32 +124,25 @@ export class NGLClient {
     return this._cols[table];
   }
 
-  // Review state of every visible site:
-  //   reviewed  – returned without includeUnreviewed
-  //   submitted – returned only with includeUnreviewed=1 (awaiting review)
-  //   draft     – returned only with an elevated role (never submitted)
+  // Review state of every visible site, from SITE_STAT (1 = submitted) and SITE_REVW
+  // (1 = reviewed); falls back to comparing what the API returns with/without unreviewed data.
   async siteLists() {
-    const all = await this.query("SITE", { includeUnreviewed: true });
-    const ids = async (opts) => new Set((await this.query("SITE", { ...opts, select: ["SITE_ID"] })).map((r) => Number(r.SITE_ID)));
-    const reviewed = await ids({ includeUnreviewed: false, elevated: false });
-    // Only an admin can also see drafts; to tell drafts from submitted sites, ask again with
-    // the lower privilege levels (errors ignored) and treat what they return as submitted.
-    let submitted = null;
-    if (session.role() === "admin") {
-      submitted = new Set();
-      for (const opts of [{ elevated: false }, { roleOverride: "reviewer" }]) {
-        try { (await ids({ includeUnreviewed: true, ...opts })).forEach((x) => submitted.add(x)); } catch { /* not allowed */ }
-      }
+    const all = await this.query("SITE");
+    if (all.length && "SITE_STAT" in all[0] && "SITE_REVW" in all[0]) {
+      return all.map((r) => {
+        const state = Number(r.SITE_REVW) === 1 ? "reviewed" : Number(r.SITE_STAT) === 1 ? "submitted" : "draft";
+        return { ...r, _state: state, _reviewed: state === "reviewed" };
+      });
     }
+    const reviewed = new Set((await this.query("SITE", { includeUnreviewed: false, elevated: false, select: ["SITE_ID"] })).map((r) => Number(r.SITE_ID)));
     return all.map((r) => {
-      const id = Number(r.SITE_ID);
-      const state = reviewed.has(id) ? "reviewed" : !submitted || submitted.has(id) ? "submitted" : "draft";
+      const state = reviewed.has(Number(r.SITE_ID)) ? "reviewed" : "submitted";
       return { ...r, _state: state, _reviewed: state === "reviewed" };
     });
   }
 
-  async buildBundle(siteId, { includeUnreviewed = true, progress } = {}) {
-    const opts = { includeUnreviewed };
+  async buildBundle(siteId, { includeUnreviewed, progress } = {}) {
+    const opts = includeUnreviewed === undefined ? {} : { includeUnreviewed };
     const B = { _log: [] };
     B.SITE = await this.query("SITE", { ...opts, where: `SITE_ID=${Number(siteId)}` });
     const ids = { SITE_ID: new Set([Number(siteId)]) };

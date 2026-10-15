@@ -19,10 +19,14 @@ module.exports = async (req, res) => {
   if (req.headers.authorization) headers.Authorization = req.headers.authorization;
   const init = { method: req.method === "POST" ? "POST" : "GET", headers };
   if (init.method === "POST") {
+    const ctype = req.headers["content-type"] || "application/x-www-form-urlencoded";
     let body = req.body;
-    if (body && typeof body === "object" && !Buffer.isBuffer(body)) body = JSON.stringify(body);
-    init.body = body || "{}";
-    headers["Content-Type"] = req.headers["content-type"] || "application/json";
+    if (body && typeof body === "object" && !Buffer.isBuffer(body)) {
+      // Vercel has already parsed the body; re-encode it the way it came in
+      body = ctype.includes("json") ? JSON.stringify(body) : new URLSearchParams(body).toString();
+    }
+    init.body = body || "";
+    headers["Content-Type"] = ctype;
   }
   try {
     const r = await fetch(ORIGIN + path, init);

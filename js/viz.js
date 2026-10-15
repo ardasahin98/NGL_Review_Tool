@@ -97,11 +97,10 @@ export function borelogPlot(el, data, findings = [], gwt = null) {
     if (spt.some((s) => fin(s.er))) tr.push({ x: spt.map((s) => (s.n * s.er) / 60), y: spt.map((s) => s.depth), name: "N60", xaxis: "x2", mode: "markers", marker: { color: C.grey, symbol: "diamond", size: 7 } });
   }
   if (samp?.length) {
-    const s = samp.filter((x) => fin(x.top));
-    if (s.some((x) => fin(x.fines))) tr.push({ x: s.map((x) => x.fines), y: s.map((x) => x.top), name: "FC %", xaxis: "x3", mode: "markers", marker: { color: "#a16207", size: 9, symbol: "square" } });
-    const pi = s.map((x) => (fin(x.pi) ? x.pi : x.ll - x.pl));
-    if (pi.some(fin)) tr.push({ x: pi, y: s.map((x) => x.top), name: "PI", xaxis: "x3", mode: "markers", marker: { color: "#2563eb", size: 9, symbol: "triangle-up" } });
-    s.forEach((x) => shapes.push({ type: "line", xref: "x", yref: "y", x0: -0.03, x1: 0, y0: x.top, y1: x.top, line: { color: "black", width: 3 } }));
+    const sp = samp.flatMap((x) => (x.specs || []).map((q) => ({ top: fin(q.top) ? q.top : x.top, fc: fin(q.fcIndx) ? q.fcIndx : q.fcGrat, pi: q.ll - q.pl })));
+    if (sp.some((x) => fin(x.fc))) tr.push({ x: sp.map((x) => x.fc), y: sp.map((x) => x.top), name: "FC %", xaxis: "x3", mode: "markers", marker: { color: "#a16207", size: 9, symbol: "square" } });
+    if (sp.some((x) => fin(x.pi))) tr.push({ x: sp.map((x) => x.pi), y: sp.map((x) => x.top), name: "PI", xaxis: "x3", mode: "markers", marker: { color: "#2563eb", size: 9, symbol: "triangle-up" } });
+    samp.filter((x) => fin(x.top)).forEach((x) => shapes.push({ type: "line", xref: "x", yref: "y", x0: -0.03, x1: 0, y0: x.top, y1: x.top, line: { color: "black", width: 3 } }));
   }
   if (gwt !== null) { shapes.push(...hline(gwt, 3)); ann.push({ xref: "x", yref: "y", x: -0.015, y: gwt, text: "▽", showarrow: false, yshift: 8, font: { color: C.gwt } }); }
   if (data.depth) { zmax = Math.max(zmax, data.depth); shapes.push({ type: "line", xref: "x domain", x0: 0, x1: 0.45, yref: "y", y0: data.depth, y1: data.depth, line: { color: "black", width: 2 } }); }
@@ -164,9 +163,22 @@ export function siteMap(el, ctx, obs, findings, scale = 20) {
   if (_map) { _map.remove(); _map = null; }
   const lat0 = fin(ctx.siteLat) ? ctx.siteLat : median(ctx.tests.map((t) => t.lat)) || 0;
   const lon0 = fin(ctx.siteLon) ? ctx.siteLon : median(ctx.tests.map((t) => t.lon)) || 0;
-  _map = L.map(el).setView([lat0, lon0], 17);
-  const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 20, attribution: "© OpenStreetMap" }).addTo(_map);
-  const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 20, attribution: "Esri World Imagery" });
+  _map = L.map(el, { preferCanvas: true }).setView([lat0, lon0], 17);
+  const providers = {
+    "Streets (CARTO)": L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", { maxZoom: 20, subdomains: "abcd", attribution: "© OpenStreetMap contributors © CARTO" }),
+    "Satellite (Esri)": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 20, attribution: "Esri World Imagery" }),
+    "OpenStreetMap": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }),
+  };
+  const order = Object.keys(providers);
+  let cur = 0, errors = 0;
+  const use = (i) => { order.forEach((k) => _map.removeLayer(providers[k])); providers[order[i]].addTo(_map); };
+  order.forEach((k) => providers[k].on("tileerror", () => {
+    if (providers[order[cur]] !== providers[k]) return;
+    if (++errors > 6 && cur < order.length - 1) { errors = 0; cur++; use(cur); }
+  }));
+  use(0);
+  const osm = providers[order[0]], sat = providers[order[1]];
+  if (window.ResizeObserver) new ResizeObserver(() => _map && _map.invalidateSize()).observe(el);
   const groups = {};
   const grp = (n) => (groups[n] ||= L.layerGroup().addTo(_map));
   const bounds = [];
@@ -196,7 +208,7 @@ export function siteMap(el, ctx, obs, findings, scale = 20) {
     L.circleMarker(p, { radius: 16, color: f.status === "FAIL" ? "#dc2626" : "#f59e0b", weight: 3, fillOpacity: 0.15 })
       .bindTooltip(`${f.status === "FAIL" ? "Inconsistent" : "Not sure"}: ${f.check}`).addTo(grp("Flags"));
   }
-  L.control.layers({ Map: osm, Satellite: sat }, groups, { collapsed: false }).addTo(_map);
+  L.control.layers(providers, groups, { collapsed: false }).addTo(_map);
   L.control.scale().addTo(_map);
   if (bounds.length > 1) {
     // keep the view around the site; outliers far away should not shrink everything

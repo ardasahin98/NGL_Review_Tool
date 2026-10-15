@@ -100,3 +100,13 @@ details summary { cursor: pointer; font-weight: 500; }
 .seg span { display: flex; flex-direction: column; } .seg small { color: var(--muted); font-size: 12px; }
 .pill.admin { background: #e8f1f8; color: var(--accent-dark); font-weight: 600; }
 .b-draft { background: #f1f5f9; color: #475569; }
+/* issues panel */
+.issues { max-height: 520px; overflow: auto; padding-right: 4px; }
+.issue { border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; cursor: pointer; background: #fff; }
+.issue.FAIL { border-left-color: var(--fail); } .issue.UNSURE { border-left-color: var(--unsure); }
+.issue:hover { background: #f8fafc; } .issue.sel { outline: 2px solid var(--accent); background: var(--accent-soft); }
+.issue .show { padding: 2px 8px; font-size: 12px; }
+.logbox { position: relative; max-height: 820px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.logbox .flash { position: absolute; left: 0; right: 0; pointer-events: none; border: 2px solid var(--fail); border-radius: 4px; animation: pulse 1.2s ease-in-out 3; }
+.logbox .flash.UNSURE { border-color: var(--unsure); }
+@keyframes pulse { 50% { opacity: .25; } }

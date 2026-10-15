@@ -64,16 +64,42 @@ Optional environment variables:
 - `NGL_ORIGIN`: a different API host, for example a staging server.
 - `NGL_FILE_PATH_REGEX`: lets the proxy forward file downloads once we know NGL's file-download URL pattern.
 
-## First run against the real API
+## Roles
 
-The column names are educated guesses based on the AGS naming used by NGL (for example `SCPT_RES` for qc, `ISPT_NVAL` for N). Matching with fallbacks is built in.
+The NGL database has admin, reviewer and event permissions, but the REST API only knows `role=admin`. So the three choices on the login page work like this:
 
-After signing in, open a site and go to **Schema**:
+| Role | What is sent | What you see |
+|---|---|---|
+| User | `includeUnreviewed=0` | reviewed (public) data only |
+| Reviewer | `includeUnreviewed=1` | adds submitted sites awaiting review |
+| Admin | `role=admin` | everything, including never-submitted drafts (rejected by NGL if the account is not an admin) |
 
-- Any field shown as "—" could not be matched. Pick the right column for it and click **Save**.
-- **Export mapping** saves the mapping as `field_map.json` so it can become the default in `js/config.js`.
+The review queue labels each site using `SITE_STAT` (1 = submitted) and `SITE_REVW` (1 = reviewed).
 
-Units assumed: qc in MPa, fs and u2 in kPa, depth in m.
+## Paging
+
+NGL may return fewer rows than requested per page. The client notices this and keeps requesting pages at that size until a short page comes back. (This was the cause of "only 20 sites".)
+
+## Schema
+
+Field names and units come from NGL's schema page (`/schema/index.html`, database `sjbrande_ngl_db`). Note that `SCPT_RES`, `SCPT_FRES` and `SCPT_PWP` are all stored in MPa.
+
+The links between tables are:
+
+- SPT results (ISPT) belong to samples: TEST → SAMP_TEST → SAMP → ISPT.
+- Lab results belong to specimens: SAMP → SPEC → GRAG/GRAT, PLAS, INDX.
+- Fines content is taken from INDX_FINE, or read from the gradation curve at 0.075 mm.
+
+The **Schema** page shows the mapping for the loaded site and lets you override a column.
+
+## Boring logs
+
+Boring logs are drawn by the UCLA Geo Boring Log Viewer API (`https://uclageo.com/boring-log-viewer/api/render`), which allows cross-origin calls, so no proxy is needed.
+
+- The tool converts each NGL boring to the viewer's JSON. Each sample's flags go into a **Review flags** column, and layer-level flags become depth notes.
+- Flagged depths are shaded on the returned SVG.
+- **Download log JSON** gives the exact JSON sent, which you can open in the viewer page.
+- If the viewer can't be reached, a built-in log is shown instead.
 
 ## Notes
 
