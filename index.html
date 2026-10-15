@@ -25,7 +25,7 @@
     <div class="login-card">
       <div class="card">
         <h2>Sign in</h2>
-        <p class="muted small">Use your nextgenerationliquefaction.org account. Choose <b>Reviewer</b> to use your reviewer (admin) privileges – otherwise unreviewed sites are hidden.</p>
+        <p class="muted small">Use your nextgenerationliquefaction.org account. Pick the privilege level of your account – unreviewed sites are only visible as Reviewer or Admin.</p>
         <form id="login">
           <label for="user">Username or email</label>
           <input id="user" name="user" autocomplete="username" required>
@@ -33,8 +33,9 @@
           <input id="pw" name="pw" type="password" autocomplete="current-password" required>
           <label>Sign in as</label>
           <div class="seg" role="radiogroup">
-            <label><input type="radio" name="role" value="admin" checked><span><b>Reviewer</b><small>admin privileges – see submitted, unreviewed and draft sites</small></span></label>
-            <label><input type="radio" name="role" value="standard"><span><b>Standard</b><small>only reviewed (public) data, plus your own submissions</small></span></label>
+            <label><input type="radio" name="role" value="user"><span><b>User</b><small>reviewed (public) data plus your own submissions</small></span></label>
+            <label><input type="radio" name="role" value="reviewer" checked><span><b>Reviewer</b><small>submitted sites awaiting review</small></span></label>
+            <label><input type="radio" name="role" value="admin"><span><b>Admin</b><small>everything, including never-submitted drafts</small></span></label>
           </div>
           <button class="primary" type="submit" style="width:100%;justify-content:center;margin-top:18px" id="go">Sign in</button>
           <div class="error" id="err"></div>
@@ -47,6 +48,7 @@
 </div>
 <script type="module">
   import { login, session } from "./js/api.js";
+  try { const last = localStorage.getItem("ngl_last_role"); if (last) document.querySelector(`input[name=role][value=${last}]`)?.click(); } catch {}
   if (session.get()) location.replace("app.html");
   const f = document.getElementById("login"), err = document.getElementById("err"), go = document.getElementById("go");
   f.addEventListener("submit", async (e) => {
@@ -54,6 +56,7 @@
     err.style.display = "none"; go.disabled = true; go.textContent = "Signing in…";
     try {
       await login(f.user.value.trim(), f.pw.value, f.role.value);
+      try { localStorage.setItem("ngl_last_role", f.role.value); } catch {}
       f.pw.value = "";
       location.replace("app.html");
     } catch (ex) {
