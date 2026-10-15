@@ -91,3 +91,12 @@ code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 12p
 details summary { cursor: pointer; font-weight: 500; }
 .leaflet-control-layers label { display: block; margin: 2px 0; font-weight: 400; }
 .leaflet-control-layers input { width: auto; margin-right: 4px; }
+
+/* role selector */
+.seg { display: grid; gap: 8px; }
+.seg label { margin: 0; font-weight: 400; display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; cursor: pointer; }
+.seg label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.seg input { width: auto; margin-top: 3px; }
+.seg span { display: flex; flex-direction: column; } .seg small { color: var(--muted); font-size: 12px; }
+.pill.admin { background: #e8f1f8; color: var(--accent-dark); font-weight: 600; }
+.b-draft { background: #f1f5f9; color: #475569; }

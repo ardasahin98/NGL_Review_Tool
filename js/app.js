@@ -1,8 +1,8 @@
 // NGL Review Assistant – single-page app (hash routing).
-import { session, NGLClient, NGLError } from "./api.js";
+import { session, NGLClient, NGLError, verifyRole } from "./api.js";
 import { Resolver, loadOverrides, saveOverrides } from "./schema.js";
 import { runAll, worst, sortFindings } from "./checks.js";
-import { STATUS_LABEL, STATUS_ICON, FIELDS, NGL_ORIGIN, API_BASE } from "./config.js";
+import { STATUS_LABEL, STATUS_ICON, FIELDS, NGL_ORIGIN, API_BASE, ROLES } from "./config.js";
 import { esc, fin, fmt, columns } from "./util.js";
 import { bi2014, lpi } from "./geotech.js";
 import * as viz from "./viz.js";
@@ -30,9 +30,22 @@ const isDemo = () => S.siteId === "demo";
 function renderWho() {
   const s = session.get();
   $("#who").innerHTML = s
-    ? `<span class="pill" title="Access token lifetime">● ${esc(s.user)} · ${session.minutesLeft()} min left</span><button id="logout">Sign out</button>`
+    ? `<label class="small muted" style="margin:0">Role</label><select id="role" style="width:auto" title="Privilege level sent to the NGL API">
+         ${Object.entries(ROLES).map(([k, r]) => `<option value="${k}" ${session.role() === k ? "selected" : ""}>${r.label}</option>`).join("")}</select>
+       <span class="pill" title="Access token lifetime">● ${esc(s.user)} · ${session.minutesLeft()} min left</span><button id="logout">Sign out</button>`
     : `<span class="pill">Demo mode</span><a class="btn primary" href="index.html">Sign in</a>`;
   $("#logout")?.addEventListener("click", () => { session.clear(); location.href = "index.html"; });
+  $("#role")?.addEventListener("change", async (e) => {
+    const prev = session.role(), to = e.target.value;
+    session.setRole(to);
+    if (ROLES[to].param) {
+      try { await verifyRole(); }
+      catch (err) { session.setRole(prev); alertBox(err.message); renderWho(); return; }
+    }
+    try { localStorage.setItem("ngl_last_role", to); } catch { /* */ }
+    S.queue = null; S.bundle = null; S.res = null; client._cols = {};
+    route();
+  });
 }
 setInterval(renderWho, 60000);
 
@@ -58,29 +71,31 @@ window.addEventListener("hashchange", route);
 // ------------------------------------------------------------------ review queue
 async function pageQueue() {
   view.innerHTML = `<div class="card"><div class="row"><div class="grow"><h1>Review queue</h1>
-    <div class="muted">Sites that are submitted but not yet reviewed (visible only with <code>includeUnreviewed=1</code>).</div></div>
+    <div class="muted">Sites submitted but not yet reviewed. Signed in as <b>${ROLES[session.role()].label}</b>${session.role() === "user" ? " – NGL hides other contributors' unreviewed sites; switch the role at the top right." : session.role() === "reviewer" ? " – sites awaiting review are included." : " – all sites, including never-submitted drafts, are included."}</div></div>
     <button id="refresh">Refresh</button></div></div><div class="card" id="qcard"><div class="empty">Loading sites…</div></div>`;
   $("#refresh").onclick = () => { S.queue = null; pageQueue(); };
   if (!S.queue) {
     try { S.queue = await client.siteLists(); }
     catch (e) { $("#qcard").innerHTML = `<p class="error" style="display:block">${esc(e.message)}</p>`; return; }
   }
-  const q = S.queue, cols = columns(q).filter((c) => c !== "_reviewed");
+  const q = S.queue, cols = columns(q).filter((c) => !c.startsWith("_"));
   const revCols = cols.filter((c) => /STAT|REVW|REVIEW|VERS/i.test(c));
   const show = ["SITE_ID", "SITE_NAME", "SITE_LAT", "SITE_LON", ...revCols].filter((c) => cols.includes(c));
-  let showAll = false, text = "";
+  let states = new Set(["submitted"]), text = "";
+  const cnt = (st) => q.filter((r) => r._state === st).length;
+  const STATE = { submitted: ['b-UNSURE', 'Awaiting review'], draft: ['b-draft', 'Not submitted (draft)'], reviewed: ['b-PASS', 'Reviewed'] };
   const draw = () => {
-    const rows = q.filter((r) => (showAll || !r._reviewed) && (!text || JSON.stringify(r).toLowerCase().includes(text)));
+    const rows = q.filter((r) => states.has(r._state) && (!text || JSON.stringify(r).toLowerCase().includes(text)));
     $("#qcard").innerHTML = `<div class="toolbar"><input type="search" id="qs" placeholder="Filter by name or ID…" value="${esc(text)}">
-      <label class="row" style="margin:0;font-weight:400"><input type="checkbox" id="qa" style="width:auto" ${showAll ? "checked" : ""}> show reviewed sites too</label>
-      <span class="muted small grow" style="text-align:right">${q.filter((r) => !r._reviewed).length} unreviewed of ${q.length} visible sites</span>
+      <div class="chips">${Object.entries(STATE).map(([k, [, l]]) => `<span class="chip ${states.has(k) ? "on" : ""}" data-st="${k}">${l} (${cnt(k)})</span>`).join("")}</div>
+      <span class="muted small grow" style="text-align:right">${q.length} visible sites${session.isElevated() ? "" : " · choose Reviewer to see all unreviewed sites"}</span>
       <span class="small muted">or open SITE_ID</span><input id="qid" style="width:110px" placeholder="e.g. 123"><button id="qgo">Open</button></div>
       <div class="tbl-wrap"><table><thead><tr><th>Status</th>${show.map((c) => `<th>${esc(c)}</th>`).join("")}<th></th></tr></thead><tbody>
-      ${rows.map((r) => `<tr class="clickable" data-id="${esc(r.SITE_ID)}"><td>${r._reviewed ? '<span class="badge b-PASS">Reviewed</span>' : '<span class="badge b-UNSURE">Awaiting review</span>'}</td>
+      ${rows.map((r) => `<tr class="clickable" data-id="${esc(r.SITE_ID)}"><td><span class="badge ${STATE[r._state][0]}">${STATE[r._state][1]}</span></td>
         ${show.map((c) => `<td>${esc(r[c])}</td>`).join("")}<td><a href="#/site/${esc(r.SITE_ID)}">Review →</a></td></tr>`).join("") || `<tr><td colspan="9" class="empty">No sites.</td></tr>`}
       </tbody></table></div>`;
     $("#qs").oninput = (e) => { text = e.target.value.toLowerCase(); draw(); $("#qs").focus(); $("#qs").setSelectionRange(text.length, text.length); };
-    $("#qa").onchange = (e) => { showAll = e.target.checked; draw(); };
+    document.querySelectorAll(".chip[data-st]").forEach((c) => (c.onclick = () => { states.has(c.dataset.st) ? states.delete(c.dataset.st) : states.add(c.dataset.st); draw(); }));
     $("#qgo").onclick = () => { const v = $("#qid").value.trim(); if (v) location.hash = "#/site/" + v; };
     document.querySelectorAll("tr.clickable").forEach((tr) => (tr.onclick = (e) => { if (e.target.tagName !== "A") location.hash = "#/site/" + tr.dataset.id; }));
   };

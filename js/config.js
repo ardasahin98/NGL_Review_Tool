@@ -99,3 +99,12 @@ export const THRESH = {
 export const STATUS_ORDER = { FAIL: 0, UNSURE: 1, PASS: 2 };
 export const STATUS_LABEL = { FAIL: "Inconsistent", UNSURE: "Not sure", PASS: "Consistent" };
 export const STATUS_ICON = { FAIL: "✕", UNSURE: "?", PASS: "✓" };
+
+// Privilege levels offered at sign-in. `param` is the value sent as role=<param> on every
+// API request (null = no role parameter). Only role=admin is documented in the API docs;
+// if NGL uses a different value for reviewers, change it here.
+export const ROLES = {
+  user:     { label: "User",     param: null,       desc: "Reviewed (public) data plus your own submissions" },
+  reviewer: { label: "Reviewer", param: "reviewer", desc: "Submitted sites awaiting review" },
+  admin:    { label: "Admin",    param: "admin",    desc: "Everything, including never-submitted drafts" },
+};

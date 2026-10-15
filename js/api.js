@@ -1,5 +1,5 @@
 // Read-only NGL REST API client (token kept in sessionStorage for its 2-hour lifetime).
-import { API_BASE, ENDPOINTS, BUNDLE_ORDER } from "./config.js";
+import { API_BASE, ENDPOINTS, BUNDLE_ORDER, ROLES } from "./config.js";
 
 const TOKEN_KEY = "ngl_token";
 const LIFETIME_MS = 2 * 3600 * 1000;
@@ -14,20 +14,39 @@ export const session = {
     } catch { /* ignore */ }
     return null;
   },
-  set(token, user) { try { sessionStorage.setItem(TOKEN_KEY, JSON.stringify({ token, user, t: Date.now() })); } catch { /* */ } },
+  set(token, user, role = "user") { try { sessionStorage.setItem(TOKEN_KEY, JSON.stringify({ token, user, role, t: Date.now() })); } catch { /* */ } },
+  setRole(role) { const s = this.get(); if (s) { s.role = role; try { sessionStorage.setItem(TOKEN_KEY, JSON.stringify(s)); } catch { /* */ } } },
+  role() { const r = this.get()?.role; return ROLES[r] ? r : "user"; },
+  roleParam() { return ROLES[this.role()].param; },
+  isElevated() { return this.roleParam() !== null; },
   clear() { try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* */ } },
   minutesLeft() { const s = this.get(); return s ? Math.max(0, Math.round((LIFETIME_MS - (Date.now() - s.t)) / 60000)) : 0; },
 };
 
-export async function login(user, password) {
+// role: key of ROLES (user / reviewer / admin). Elevated roles are verified right after
+// sign-in so a missing privilege shows a clear message instead of an empty queue.
+export async function login(user, password, role = "reviewer") {
   const r = await fetch(API_BASE + "/users/api-token", {
     headers: { Accept: "application/json", Authorization: "Basic " + btoa(unescape(encodeURIComponent(user + ":" + password))) },
   });
   let js = {};
   try { js = await r.json(); } catch { /* not json */ }
   if (!js.token) throw new NGLError(js.errorMessage || `Login failed (HTTP ${r.status}).`);
-  session.set(js.token, user);
+  session.set(js.token, user, role);
+  if (ROLES[role]?.param) {
+    try { await verifyRole(); }
+    catch (e) { session.clear(); throw e; }
+  }
   return js.token;
+}
+
+export async function verifyRole() {
+  const r = session.role(), p = ROLES[r].param;
+  try { await new NGLClient().query("SITE", { limit: 1, maxPages: 1 }); }
+  catch (e) {
+    throw new NGLError(`NGL did not accept ${ROLES[r].label} privileges for this account (role=${p}). ` +
+      `Pick a lower level, or check which role your NGL account has. (${e.message})`);
+  }
 }
 
 export class NGLClient {
@@ -40,7 +59,9 @@ export class NGLClient {
   }
 
   // all rows matching `where` (follows pagination); POST with JSON body
-  async query(table, { where, select, includeUnreviewed = true, limit = 5000, maxPages = 200, sort } = {}) {
+  // elevated: undefined -> follow the signed-in role; false -> force a plain user request
+  async query(table, { where, select, includeUnreviewed = true, limit = 5000, maxPages = 200, sort, elevated, roleOverride } = {}) {
+    const roleParam = roleOverride ? ROLES[roleOverride].param : elevated === false ? null : session.roleParam();
     const path = ENDPOINTS[table] || table;
     const rows = [];
     for (let page = 1; page <= maxPages; page++) {
@@ -49,6 +70,7 @@ export class NGLClient {
       if (select) body.select = Array.isArray(select) ? select.join(",") : select;
       if (includeUnreviewed) body.includeUnreviewed = 1;
       if (sort) body.sort = sort;
+      if (roleParam) body.role = roleParam;
       const r = await fetch(API_BASE + path, { method: "POST", headers: this.headers(), body: JSON.stringify(body) });
       let js;
       try { js = await r.json(); } catch { throw new NGLError(`${table}: HTTP ${r.status} (not JSON)`); }
@@ -81,12 +103,28 @@ export class NGLClient {
     return this._cols[table];
   }
 
-  // sites visible only with includeUnreviewed=1 are submitted-but-not-reviewed
+  // Review state of every visible site:
+  //   reviewed  – returned without includeUnreviewed
+  //   submitted – returned only with includeUnreviewed=1 (awaiting review)
+  //   draft     – returned only with an elevated role (never submitted)
   async siteLists() {
     const all = await this.query("SITE", { includeUnreviewed: true });
-    const rev = await this.query("SITE", { includeUnreviewed: false, select: ["SITE_ID"] });
-    const reviewed = new Set(rev.map((r) => Number(r.SITE_ID)));
-    return all.map((r) => ({ ...r, _reviewed: reviewed.has(Number(r.SITE_ID)) }));
+    const ids = async (opts) => new Set((await this.query("SITE", { ...opts, select: ["SITE_ID"] })).map((r) => Number(r.SITE_ID)));
+    const reviewed = await ids({ includeUnreviewed: false, elevated: false });
+    // Only an admin can also see drafts; to tell drafts from submitted sites, ask again with
+    // the lower privilege levels (errors ignored) and treat what they return as submitted.
+    let submitted = null;
+    if (session.role() === "admin") {
+      submitted = new Set();
+      for (const opts of [{ elevated: false }, { roleOverride: "reviewer" }]) {
+        try { (await ids({ includeUnreviewed: true, ...opts })).forEach((x) => submitted.add(x)); } catch { /* not allowed */ }
+      }
+    }
+    return all.map((r) => {
+      const id = Number(r.SITE_ID);
+      const state = reviewed.has(id) ? "reviewed" : !submitted || submitted.has(id) ? "submitted" : "draft";
+      return { ...r, _state: state, _reviewed: state === "reviewed" };
+    });
   }
 
   async buildBundle(siteId, { includeUnreviewed = true, progress } = {}) {
